@@ -22,6 +22,7 @@ Reference:
 """
 
 import os
+import re
 import sys
 import json
 import hashlib
@@ -112,15 +113,24 @@ class LocalPersistentVectorStore:
                 CREATE TABLE IF NOT EXISTS documents (
                     id TEXT PRIMARY KEY,
                     content TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    metadata TEXT DEFAULT '{}'
                 )
                 """
             )
+            try:
+                cursor.execute("ALTER TABLE documents ADD COLUMN metadata TEXT DEFAULT '{}'")
+            except sqlite3.OperationalError:
+                pass
             conn.commit()
 
-    def add_documents(self, chunks: List[str]) -> int:
-        valid_chunks = [c.strip() for c in chunks if isinstance(c, str) and c.strip()]
-        if not valid_chunks:
+    def add_documents(
+        self,
+        chunks: Union[List[str], List[Dict[str, Any]]],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        ids: Optional[List[str]] = None
+    ) -> int:
+        if not chunks:
             return 0
 
         now = datetime.now(timezone.utc).isoformat()
@@ -128,14 +138,30 @@ class LocalPersistentVectorStore:
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            for chunk in valid_chunks:
-                doc_id = hashlib.sha256(chunk.encode("utf-8")).hexdigest()[:16]
+            for idx, item in enumerate(chunks):
+                if isinstance(item, dict):
+                    text = item.get("text_content") or item.get("text") or item.get("content") or ""
+                    meta = item.get("metadata") or {
+                        "publisher": item.get("publisher"),
+                        "source_tier": item.get("source_tier"),
+                        "source_trust_score": item.get("source_trust_score"),
+                    }
+                    doc_id = item.get("chunk_id") or hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+                else:
+                    text = str(item).strip()
+                    meta = metadatas[idx] if (metadatas and idx < len(metadatas)) else {}
+                    doc_id = ids[idx] if (ids and idx < len(ids)) else hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+                if not text:
+                    continue
+
+                meta_json = json.dumps(meta) if isinstance(meta, dict) else "{}"
                 cursor.execute(
                     """
-                    INSERT OR IGNORE INTO documents (id, content, created_at)
-                    VALUES (?, ?, ?)
+                    INSERT OR IGNORE INTO documents (id, content, created_at, metadata)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (doc_id, chunk, now),
+                    (doc_id, text, now, meta_json),
                 )
                 if cursor.rowcount > 0:
                     added_count += 1
@@ -149,6 +175,114 @@ class LocalPersistentVectorStore:
             cursor = conn.cursor()
             cursor.execute("SELECT id, content FROM documents ORDER BY created_at DESC")
             return cursor.fetchall()
+
+    def get_all_documents_detailed(self) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, content, created_at, metadata FROM documents ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            results = []
+            for r in rows:
+                meta = {}
+                if r[3]:
+                    try:
+                        meta = json.loads(r[3])
+                    except Exception:
+                        meta = {}
+                tickers = meta.get("primary_ticker_mentions", [])
+                if isinstance(tickers, str) and tickers:
+                    tickers = [t.strip() for t in tickers.split(",") if t.strip()]
+                elif not isinstance(tickers, list):
+                    tickers = []
+
+                results.append({
+                    "id": r[0],
+                    "text_content": r[1],
+                    "created_at": r[2],
+                    "publisher": meta.get("publisher", "Financial News Wire"),
+                    "source_tier": meta.get("source_tier", "Tier 3"),
+                    "source_trust_score": float(meta.get("source_trust_score", 0.70)),
+                    "primary_ticker_mentions": tickers,
+                    "url_or_ref": meta.get("url_or_ref", ""),
+                })
+            return results
+
+    def is_semantic_duplicate(self, text: str, threshold: float = 0.75) -> Tuple[bool, Optional[str], float]:
+        """
+        Detects if text is a semantic duplicate of an already stored document.
+        Handles variations like:
+          - 'Crude oil increase by 12%' vs '12% hike in crude oil prices'
+        Returns: (is_duplicate, matching_doc_text, similarity_score)
+        """
+        all_docs = self.get_all_documents()
+        if not all_docs:
+            return False, None, 0.0
+
+        clean_new = text.strip().lower()
+        new_words = set(re.findall(r"\b\w+\b", clean_new))
+
+        # 1. Exact string match
+        for _, doc_text in all_docs:
+            if clean_new == doc_text.strip().lower():
+                return True, doc_text, 1.0
+
+        # Key tokens: non-stop words, numbers, percentages, key commodities
+        key_tokens_new = {
+            w for w in new_words
+            if len(w) > 3 or any(c.isdigit() for c in w) or w in {"oil", "fed", "gas", "cpi", "rate", "gold", "tech", "chip", "opec"}
+        }
+
+        doc_texts = [content for _, content in all_docs]
+
+        # 2. TF-IDF Cosine Similarity across existing documents
+        if SKLEARN_AVAILABLE and len(doc_texts) > 0 and len(clean_new) > 8:
+            try:
+                from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+                financial_exceptions = {"interest", "bill", "bank", "rate", "rates", "market", "stock", "bond", "yield"}
+                safe_stop_words = [w for w in ENGLISH_STOP_WORDS if w not in financial_exceptions]
+
+                vectorizer = TfidfVectorizer(
+                    stop_words=safe_stop_words,
+                    ngram_range=(1, 2),
+                    sublinear_tf=True
+                )
+                corpus = [clean_new] + [d.lower() for d in doc_texts]
+                tfidf_matrix = vectorizer.fit_transform(corpus)
+                sims = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+
+                best_idx = int(np.argmax(sims))
+                max_sim = float(sims[best_idx])
+                best_doc = doc_texts[best_idx]
+
+                best_words = set(re.findall(r"\b\w+\b", best_doc.lower()))
+                key_tokens_best = {
+                    w for w in best_words
+                    if len(w) > 3 or any(c.isdigit() for c in w) or w in {"oil", "fed", "gas", "cpi", "rate", "gold", "tech", "chip", "opec"}
+                }
+                shared_keys = key_tokens_new & key_tokens_best
+                total_keys = key_tokens_new | key_tokens_best
+                jaccard = len(shared_keys) / max(len(total_keys), 1)
+
+                if max_sim >= threshold or (jaccard >= 0.60 and max_sim >= 0.50) or (jaccard >= 0.70):
+                    effective_score = round(max(max_sim, jaccard), 4)
+                    return True, best_doc, effective_score
+            except Exception as e:
+                logger.debug(f"TF-IDF semantic dedup calculation note: {e}")
+
+        # 3. Token Overlap Fallback
+        for _, doc_text in all_docs:
+            existing_words = set(re.findall(r"\b\w+\b", doc_text.lower()))
+            key_tokens_existing = {
+                w for w in existing_words
+                if len(w) > 3 or any(c.isdigit() for c in w) or w in {"oil", "fed", "gas", "cpi", "rate", "gold", "tech", "chip", "opec"}
+            }
+            shared = key_tokens_new & key_tokens_existing
+            total = key_tokens_new | key_tokens_existing
+            jaccard = len(shared) / max(len(total), 1)
+            if jaccard >= 0.65 and len(shared) >= 2:
+                return True, doc_text, round(jaccard, 4)
+
+        return False, None, 0.0
 
     def count(self) -> int:
         with sqlite3.connect(self.db_path) as conn:
@@ -213,6 +347,81 @@ class LocalPersistentVectorStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [text for _, text in scored[:top_k]]
 
+    def query_detailed(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Executes semantic similarity search on stored vectors and ranks by
+        cosine similarity score fused with source verification score.
+        Returns full schema-ready chunk details.
+        """
+        if not query_text or not query_text.strip():
+            return []
+
+        docs = self.get_all_documents_detailed()
+        if not docs:
+            return []
+
+        doc_texts = [d["text_content"] for d in docs]
+        sim_scores = [0.0] * len(docs)
+
+        if SKLEARN_AVAILABLE and len(doc_texts) > 0:
+            try:
+                from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+                financial_exceptions = {"interest", "bill", "bank", "rate", "rates", "market", "stock", "bond", "yield"}
+                safe_stop_words = [w for w in ENGLISH_STOP_WORDS if w not in financial_exceptions]
+
+                vectorizer = TfidfVectorizer(stop_words=safe_stop_words, ngram_range=(1, 2), sublinear_tf=True)
+                tfidf_matrix = vectorizer.fit_transform(doc_texts)
+                query_vec = vectorizer.transform([query_text])
+                similarities = cosine_similarity(query_vec, tfidf_matrix).flatten()
+                sim_scores = [float(s) for s in similarities]
+            except Exception as e:
+                logger.warning(f"Error computing TF-IDF similarity in query_detailed: {e}")
+
+        # Fallback/hybrid keyword matching if all similarity scores are 0
+        if max(sim_scores) == 0.0:
+            q_words = set(query_text.lower().split())
+            for idx, text in enumerate(doc_texts):
+                matched = sum(1 for w in q_words if w in text.lower())
+                sim_scores[idx] = min(1.0, matched / max(1, len(q_words)))
+
+        scored_results = []
+        for idx, doc in enumerate(docs):
+            sim = sim_scores[idx]
+            trust = doc.get("source_trust_score", 0.70)
+            # Composite rank: 70% vector similarity + 30% source trust
+            combined_rank = (sim * 0.70) + (trust * 0.30)
+            
+            # Extract headline and snippet
+            raw_text = doc.get("text_content", "")
+            headline = raw_text
+            snippet = raw_text
+            if "[" in raw_text and "]" in raw_text:
+                parts = raw_text.split("]", 1)
+                headline = parts[0].replace("[", "").strip()
+                snippet = parts[1].strip() if len(parts) > 1 else raw_text
+            elif "." in raw_text:
+                parts = raw_text.split(".", 1)
+                headline = parts[0].strip()
+                snippet = parts[1].strip() if len(parts) > 1 else raw_text
+
+            scored_results.append({
+                "chunk_id": doc.get("id", f"chunk-{idx}"),
+                "similarity_score": round(float(sim), 4),
+                "combined_rank": combined_rank,
+                "headline": headline,
+                "snippet": snippet,
+                "source": doc.get("publisher", "Financial Wire"),
+                "source_tier": doc.get("source_tier", "Tier 2"),
+                "source_trust_score": trust,
+                "primary_ticker_mentions": doc.get("primary_ticker_mentions", []),
+                "created_at": doc.get("created_at", datetime.now(timezone.utc).isoformat())
+            })
+
+        # Rank by similarity score and source verification score
+        scored_results.sort(key=lambda x: (x["similarity_score"] > 0, x["combined_rank"]), reverse=True)
+        return scored_results[:top_k]
+
+
 
 # ============================================================================
 # Main Vector Database Manager Class
@@ -237,6 +446,8 @@ class VectorDBManager:
         self._chroma_collection: Any = None
         self._local_store: Optional[LocalPersistentVectorStore] = None
         self._initialized: bool = False
+        self._recent_duplicates_blocked: List[Dict[str, Any]] = []
+        self._duplicates_blocked_count: int = 0
 
     def initialize(self) -> bool:
         """
@@ -278,15 +489,17 @@ class VectorDBManager:
             self._initialized = False
             return False
 
-    def add_documents(self, chunks: List[str]) -> int:
+    def add_documents(
+        self,
+        chunks: Union[List[str], List[Dict[str, Any]]],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        ids: Optional[List[str]] = None,
+    ) -> int:
         """
         Embeds incoming news text chunks and stores them in the persistent collection.
-
-        Args:
-            chunks: List of news text snippets.
-
-        Returns:
-            int: Number of newly stored documents.
+        Enforces SEMANTIC DEDUPLICATION SHIELD:
+        Blocks incoming text that is semantically synonymous with existing documents
+        (e.g., "12% hike in crude oil prices" vs "Crude oil increase by 12%").
         """
         if not self._initialized:
             self.initialize()
@@ -295,17 +508,77 @@ class VectorDBManager:
             logger.warning("Empty or invalid chunks list provided to add_documents.")
             return 0
 
-        valid_chunks = [c.strip() for c in chunks if isinstance(c, str) and c.strip()]
-        if not valid_chunks:
+        # Normalize texts, metadatas, and ids
+        candidate_items: List[Tuple[str, str, Dict[str, Any]]] = []
+
+        for idx, item in enumerate(chunks):
+            if isinstance(item, dict):
+                text = str(item.get("text_content") or item.get("text") or item.get("content") or "").strip()
+                doc_id = str(item.get("chunk_id") or hashlib.sha256(text.encode("utf-8")).hexdigest()[:16])
+                raw_meta = item.get("metadata") or {}
+                meta = {
+                    "publisher": str(item.get("publisher") or "Unknown"),
+                    "source_tier": str(item.get("source_tier") or "Tier 3"),
+                    "source_trust_score": float(item.get("source_trust_score") or 0.70),
+                }
+                if isinstance(raw_meta, dict):
+                    for k, v in raw_meta.items():
+                        if isinstance(v, list):
+                            meta[k] = ",".join(str(x) for x in v)
+                        elif isinstance(v, (str, int, float, bool)):
+                            meta[k] = v
+                        else:
+                            meta[k] = str(v)
+            else:
+                text = str(item).strip()
+                doc_id = (ids[idx] if (ids and idx < len(ids)) else hashlib.sha256(text.encode("utf-8")).hexdigest()[:16])
+                meta = metadatas[idx] if (metadatas and idx < len(metadatas)) else {"source": "rss_or_wire"}
+
+            if text:
+                candidate_items.append((text, doc_id, meta))
+
+        if not candidate_items:
+            return 0
+
+        # Filter candidates through Semantic Deduplication Shield
+        parsed_texts: List[str] = []
+        parsed_ids: List[str] = []
+        parsed_metas: List[Dict[str, Any]] = []
+
+        for text, doc_id, meta in candidate_items:
+            if self._local_store:
+                is_dup, matched_text, sim = self._local_store.is_semantic_duplicate(text, threshold=0.75)
+                if is_dup:
+                    self._duplicates_blocked_count += 1
+                    self._recent_duplicates_blocked.insert(0, {
+                        "rejected_text": text[:140],
+                        "matched_existing": (matched_text or "")[:140],
+                        "similarity_score": sim,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "reason": "semantic_duplicate_shield"
+                    })
+                    if len(self._recent_duplicates_blocked) > 50:
+                        self._recent_duplicates_blocked.pop()
+                    logger.info(
+                        f"🛡️ SEMANTIC SHIELD BLOCKED duplicate (sim={sim:.2f}): "
+                        f"'{text[:50]}...' matches existing '{matched_text[:50] if matched_text else ''}...'"
+                    )
+                    continue
+
+            parsed_texts.append(text)
+            parsed_ids.append(doc_id)
+            parsed_metas.append(meta)
+
+        if not parsed_texts:
+            logger.info("All incoming chunks were blocked by Semantic Deduplication Shield as existing knowledge.")
             return 0
 
         # Attempt native ChromaDB add first if available
         if self.backend == "chromadb_native" and self._chroma_collection is not None:
             try:
-                ids = [hashlib.sha256(c.encode("utf-8")).hexdigest()[:16] for c in valid_chunks]
-                self._chroma_collection.add(ids=ids, documents=valid_chunks)
-                logger.info(f"Added {len(valid_chunks)} documents via native ChromaDB.")
-                return len(valid_chunks)
+                self._chroma_collection.add(ids=parsed_ids, documents=parsed_texts, metadatas=parsed_metas)
+                logger.info(f"Added {len(parsed_texts)} unique verified documents via native ChromaDB.")
+                return len(parsed_texts)
             except Exception as add_exc:
                 logger.warning(
                     f"Native ChromaDB add raised ({add_exc}). "
@@ -315,7 +588,7 @@ class VectorDBManager:
 
         # Resilient local vector store
         if self._local_store is not None:
-            return self._local_store.add_documents(valid_chunks)
+            return self._local_store.add_documents(chunks=parsed_texts, metadatas=parsed_metas, ids=parsed_ids)
 
         logger.error("No active vector storage engine available to persist documents.")
         return 0
@@ -359,6 +632,19 @@ class VectorDBManager:
 
         return []
 
+    def query_detailed(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Executes semantic search across ChromaDB / Local vector store,
+        ranking results by vector cosine distance fused with source verification score.
+        """
+        if not self._initialized:
+            self.initialize()
+
+        if self._local_store is not None:
+            return self._local_store.query_detailed(query_text, top_k=top_k)
+        return []
+
+
     def get_collection_stats(self) -> Dict[str, Any]:
         """Returns collection metrics and backend engine details."""
         doc_count = self._local_store.count() if self._local_store else 0
@@ -369,6 +655,22 @@ class VectorDBManager:
             "total_documents": doc_count,
             "initialized": self._initialized,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get_all_documents_detailed(self) -> List[Dict[str, Any]]:
+        """Returns all stored documents with rich metadata."""
+        if not self._initialized:
+            self.initialize()
+        if self._local_store:
+            return self._local_store.get_all_documents_detailed()
+        return []
+
+    def get_deduplication_audit(self) -> Dict[str, Any]:
+        """Returns live statistics on blocked semantic duplicates."""
+        return {
+            "semantic_threshold": 0.75,
+            "duplicates_blocked_count": self._duplicates_blocked_count,
+            "recent_duplicates_blocked": self._recent_duplicates_blocked[:25],
         }
 
     def clear(self) -> None:
@@ -428,9 +730,27 @@ def query_vector_context(query_text: str, top_k: int = 3) -> List[str]:
     return get_default_manager().query_vector_context(query_text, top_k=top_k)
 
 
+def query_detailed(query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    """
+    Searches Vector DB with similarity scores, source tiers, trust ratings, and snippets.
+    """
+    return get_default_manager().query_detailed(query_text, top_k=top_k)
+
+
+
 def get_collection_stats() -> Dict[str, Any]:
     """Returns vector database status and document count."""
     return get_default_manager().get_collection_stats()
+
+
+def get_all_documents_detailed() -> List[Dict[str, Any]]:
+    """Returns detailed records of all persisted chunks in the Vector DB."""
+    return get_default_manager().get_all_documents_detailed()
+
+
+def get_deduplication_audit() -> Dict[str, Any]:
+    """Returns live audit statistics of blocked semantic duplicates."""
+    return get_default_manager().get_deduplication_audit()
 
 
 def clear_collection() -> None:

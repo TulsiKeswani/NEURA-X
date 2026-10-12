@@ -118,7 +118,7 @@
       "category": "Companies",
       "hop": 3,
       "sentiment": "negative",
-      "impact_score": 0.80,
+      "impact_score": 0.8,
       "ticker": "DAL",
       "description": "Aviation carriers face immediate unit cost headwinds; jet fuel constitutes 30-35% of total operating expenditures.",
       "status": "Observed SEC Filings"
@@ -177,6 +177,171 @@
       "ticker": "SPY",
       "description": "Broad equity market indices reprice lower as higher discount rates compress P/E multiples and multi-sector input costs degrade aggregate earnings.",
       "status": "Inferred Contagion"
+    },
+    {
+      "id": "node-shipping-sector",
+      "label": "Maritime Shipping (BDI)",
+      "category": "Financial Sectors",
+      "hop": 1,
+      "sentiment": "negative",
+      "impact_score": 0.78,
+      "ticker": "BDI",
+      "description": "Marine bunker fuel surges lift global container and dry bulk operating costs across maritime transit corridors.",
+      "status": "Observed Benchmark"
+    },
+    {
+      "id": "node-petrochem-feedstock",
+      "label": "Petrochemical Feedstock (Naphtha)",
+      "category": "Commodities",
+      "hop": 1,
+      "sentiment": "negative",
+      "impact_score": 0.82,
+      "ticker": null,
+      "description": "Naphtha and ethylene cracker cracking costs increase promptly, squeezing base chemical margins.",
+      "status": "Observed Benchmark"
+    },
+    {
+      "id": "node-utilities-sector",
+      "label": "Electric Utilities (XLU)",
+      "category": "Financial Sectors",
+      "hop": 1,
+      "sentiment": "negative",
+      "impact_score": 0.74,
+      "ticker": "XLU",
+      "description": "Thermal power generation costs jump, straining regulated retail utility profit margins.",
+      "status": "Observed Benchmark"
+    },
+    {
+      "id": "node-plastics-synthetics",
+      "label": "Plastics & Polymers Industry",
+      "category": "Financial Sectors",
+      "hop": 2,
+      "sentiment": "negative",
+      "impact_score": 0.79,
+      "ticker": "DOW",
+      "description": "Polymer resin manufacturers pass higher feedstock overhead down to packaging and automotive parts makers.",
+      "status": "Inferred Transmission"
+    },
+    {
+      "id": "node-freight-logistics",
+      "label": "Freight Trucking & Intermodal (IYT)",
+      "category": "Financial Sectors",
+      "hop": 2,
+      "sentiment": "negative",
+      "impact_score": 0.81,
+      "ticker": "IYT",
+      "description": "Diesel fuel surcharges expand across long-haul trucking fleets and intermodal rail freight.",
+      "status": "Observed Transmission"
+    },
+    {
+      "id": "node-agri-fertilizer",
+      "label": "Fertilizer & Agricultural Chemicals",
+      "category": "Commodities",
+      "hop": 2,
+      "sentiment": "negative",
+      "impact_score": 0.76,
+      "ticker": "CF",
+      "description": "Hydrocarbon and natural gas synthesis costs raise nitrogen and ammonia fertilizer production prices.",
+      "status": "Inferred Transmission"
+    },
+    {
+      "id": "node-automotive-sector",
+      "label": "Automotive Manufacturing (CARZ)",
+      "category": "Financial Sectors",
+      "hop": 3,
+      "sentiment": "negative",
+      "impact_score": 0.73,
+      "ticker": "CARZ",
+      "description": "Rising synthetic components and elevated transport costs create headwinds for automotive assembly plants.",
+      "status": "Inferred Relationship"
+    },
+    {
+      "id": "node-consumer-staples",
+      "label": "Consumer Food & Staples (XLP)",
+      "category": "Financial Sectors",
+      "hop": 3,
+      "sentiment": "negative",
+      "impact_score": 0.7,
+      "ticker": "XLP",
+      "description": "Agricultural supply costs and distribution logistics erode packaged food and beverage margins.",
+      "status": "Inferred Relationship"
+    },
+    {
+      "id": "node-retail-goods",
+      "label": "Retail & E-Commerce (XRT)",
+      "category": "Financial Sectors",
+      "hop": 3,
+      "sentiment": "negative",
+      "impact_score": 0.68,
+      "ticker": "XRT",
+      "description": "Last-mile parcel delivery surcharges compress discretionary retail net margins.",
+      "status": "Inferred Relationship"
+    },
+    {
+      "id": "node-exxon-mobil",
+      "label": "ExxonMobil Corp (XOM)",
+      "category": "Companies",
+      "hop": 4,
+      "sentiment": "positive",
+      "impact_score": 0.85,
+      "ticker": "XOM",
+      "description": "Upstream supermajor benefits directly from expanded realized crude pricing and free cash flow yields.",
+      "status": "Observed Equity"
+    },
+    {
+      "id": "node-chevron-corp",
+      "label": "Chevron Corp (CVX)",
+      "category": "Companies",
+      "hop": 4,
+      "sentiment": "positive",
+      "impact_score": 0.82,
+      "ticker": "CVX",
+      "description": "Upstream E&P asset base generates higher operating margins and dividend support.",
+      "status": "Observed Equity"
+    },
+    {
+      "id": "node-united-airlines",
+      "label": "United Airlines Holdings (UAL)",
+      "category": "Companies",
+      "hop": 4,
+      "sentiment": "negative",
+      "impact_score": 0.78,
+      "ticker": "UAL",
+      "description": "High operational jet fuel exposure exerts immediate downward pressure on carrier EBIT margins.",
+      "status": "Observed Equity"
+    },
+    {
+      "id": "node-ups-logistics",
+      "label": "United Parcel Service (UPS)",
+      "category": "Companies",
+      "hop": 4,
+      "sentiment": "negative",
+      "impact_score": 0.73,
+      "ticker": "UPS",
+      "description": "Fleet fuel expenditures require emergency customer fuel surcharge hikes, dampening package volumes.",
+      "status": "Observed Equity"
+    },
+    {
+      "id": "node-tesla-auto",
+      "label": "Tesla Inc (TSLA)",
+      "category": "Companies",
+      "hop": 4,
+      "sentiment": "negative",
+      "impact_score": 0.65,
+      "ticker": "TSLA",
+      "description": "High interest rate discounting and auto supply chain pressures affect growth valuation multiples.",
+      "status": "Inferred Equity"
+    },
+    {
+      "id": "node-dow-chemical",
+      "label": "Dow Inc (DOW)",
+      "category": "Companies",
+      "hop": 4,
+      "sentiment": "negative",
+      "impact_score": 0.75,
+      "ticker": "DOW",
+      "description": "Upstream petrochemical cracker raw material cost inflation dampens industrial chemical profitability.",
+      "status": "Observed Equity"
     }
   ],
   "edges": [
@@ -232,7 +397,7 @@
       "source": "node-interest-rates",
       "target": "node-bank-funding",
       "relationship": "Deposit Beta Pressure",
-      "weight": 0.80,
+      "weight": 0.8,
       "type": "inferred",
       "evidence_id": "ev-oil-6"
     },
@@ -296,7 +461,7 @@
       "source": "node-inflation",
       "target": "node-market-indices",
       "relationship": "Macro Valuation Drag",
-      "weight": 0.70,
+      "weight": 0.7,
       "type": "inferred",
       "evidence_id": "ev-oil-14"
     },
@@ -331,6 +496,158 @@
       "weight": 0.67,
       "type": "inferred",
       "evidence_id": "ev-oil-18"
+    },
+    {
+      "source": "node-event",
+      "target": "node-shipping-sector",
+      "relationship": "Bunker Fuel Exposure",
+      "weight": 0.82,
+      "type": "observed",
+      "evidence_id": "ev-oil-1"
+    },
+    {
+      "source": "node-event",
+      "target": "node-petrochem-feedstock",
+      "relationship": "Feedstock Shock",
+      "weight": 0.85,
+      "type": "observed",
+      "evidence_id": "ev-oil-1"
+    },
+    {
+      "source": "node-event",
+      "target": "node-utilities-sector",
+      "relationship": "Power Generation Cost",
+      "weight": 0.78,
+      "type": "observed",
+      "evidence_id": "ev-oil-1"
+    },
+    {
+      "source": "node-petrochem-feedstock",
+      "target": "node-plastics-synthetics",
+      "relationship": "Resin Cost Pass-Through",
+      "weight": 0.84,
+      "type": "inferred",
+      "evidence_id": "ev-oil-12"
+    },
+    {
+      "source": "node-shipping-sector",
+      "target": "node-freight-logistics",
+      "relationship": "Transport Cost Escalation",
+      "weight": 0.83,
+      "type": "observed",
+      "evidence_id": "ev-oil-10"
+    },
+    {
+      "source": "node-petrochem-feedstock",
+      "target": "node-agri-fertilizer",
+      "relationship": "Chemical Synthesis Overhead",
+      "weight": 0.77,
+      "type": "inferred",
+      "evidence_id": "ev-oil-12"
+    },
+    {
+      "source": "node-plastics-synthetics",
+      "target": "node-automotive-sector",
+      "relationship": "Auto Parts Component Cost",
+      "weight": 0.75,
+      "type": "inferred",
+      "evidence_id": "ev-oil-13"
+    },
+    {
+      "source": "node-agri-fertilizer",
+      "target": "node-consumer-staples",
+      "relationship": "Crop Input Inflation",
+      "weight": 0.72,
+      "type": "inferred",
+      "evidence_id": "ev-oil-13"
+    },
+    {
+      "source": "node-freight-logistics",
+      "target": "node-retail-goods",
+      "relationship": "Last-Mile Delivery Surcharges",
+      "weight": 0.74,
+      "type": "inferred",
+      "evidence_id": "ev-oil-10"
+    },
+    {
+      "source": "node-energy-sector",
+      "target": "node-exxon-mobil",
+      "relationship": "E&P Realized Cash Flow",
+      "weight": 0.9,
+      "type": "observed",
+      "evidence_id": "ev-oil-2"
+    },
+    {
+      "source": "node-energy-sector",
+      "target": "node-chevron-corp",
+      "relationship": "Upstream E&P Realization",
+      "weight": 0.88,
+      "type": "observed",
+      "evidence_id": "ev-oil-2"
+    },
+    {
+      "source": "node-fuel-costs",
+      "target": "node-united-airlines",
+      "relationship": "Aviation Kerosene Expense",
+      "weight": 0.85,
+      "type": "observed",
+      "evidence_id": "ev-oil-11"
+    },
+    {
+      "source": "node-freight-logistics",
+      "target": "node-ups-logistics",
+      "relationship": "Diesel Surcharge Pressure",
+      "weight": 0.8,
+      "type": "observed",
+      "evidence_id": "ev-oil-10"
+    },
+    {
+      "source": "node-automotive-sector",
+      "target": "node-tesla-auto",
+      "relationship": "Auto Demand & Discount Rate",
+      "weight": 0.71,
+      "type": "inferred",
+      "evidence_id": "ev-oil-15"
+    },
+    {
+      "source": "node-plastics-synthetics",
+      "target": "node-dow-chemical",
+      "relationship": "Polymer Margin Compression",
+      "weight": 0.79,
+      "type": "observed",
+      "evidence_id": "ev-oil-12"
+    },
+    {
+      "source": "node-utilities-sector",
+      "target": "node-energy-inputs",
+      "relationship": "Electricity Tariff Surcharge",
+      "weight": 0.81,
+      "type": "inferred",
+      "evidence_id": "ev-oil-12"
+    },
+    {
+      "source": "node-airlines",
+      "target": "node-united-airlines",
+      "relationship": "Sector Peer Contagion",
+      "weight": 0.86,
+      "type": "observed",
+      "evidence_id": "ev-oil-11"
+    },
+    {
+      "source": "node-retail-goods",
+      "target": "node-market-indices",
+      "relationship": "Consumer Demand Drag",
+      "weight": 0.68,
+      "type": "inferred",
+      "evidence_id": "ev-oil-14"
+    },
+    {
+      "source": "node-consumer-staples",
+      "target": "node-market-indices",
+      "relationship": "Margin Squeeze Drag",
+      "weight": 0.7,
+      "type": "inferred",
+      "evidence_id": "ev-oil-14"
     }
   ],
   "hop_chain": [
@@ -457,37 +774,37 @@
   "evidence": {
     "ev-oil-1": {
       "id": "ev-oil-1",
-      "title": "EIA Weekly Petroleum Status Report — Physical Supply Constraints",
+      "title": "EIA Weekly Petroleum Status Report \u00e2\u20ac\u201d Physical Supply Constraints",
       "source": "U.S. Energy Information Administration (EIA)",
       "confidence": 95,
-      "text": "Empirical historical data indicates that an unexpected 1.0–1.5M bpd OPEC supply quota reduction shifts OECD commercial crude inventories downward by approximately 0.8M bpd, creating immediate upward prompt-month futures pressure.",
+      "text": "Empirical historical data indicates that an unexpected 1.0\u00e2\u20ac\u201c1.5M bpd OPEC supply quota reduction shifts OECD commercial crude inventories downward by approximately 0.8M bpd, creating immediate upward prompt-month futures pressure.",
       "badge": "Observed Benchmark",
       "timestamp": "2026-10-11T12:00:00Z",
-      "uncertainty": "Non-OPEC shale output response or strategic petroleum reserve (SPR) releases can partially offset the deficit over 60–90 days."
+      "uncertainty": "Non-OPEC shale output response or strategic petroleum reserve (SPR) releases can partially offset the deficit over 60\u00e2\u20ac\u201c90 days."
     },
     "ev-oil-2": {
       "id": "ev-oil-2",
-      "title": "SEC Form 10-K Filings — Upstream Exploration & Production Realizations",
+      "title": "SEC Form 10-K Filings \u00e2\u20ac\u201d Upstream Exploration & Production Realizations",
       "source": "SEC Edgar / Corporate Disclosures",
       "confidence": 88,
-      "text": "Upstream oil and gas producers exhibit an unhedged revenue sensitivity of approximately 75–85% to spot WTI crude price fluctuations, leading to immediate operating free cash flow expansion.",
+      "text": "Upstream oil and gas producers exhibit an unhedged revenue sensitivity of approximately 75\u00e2\u20ac\u201c85% to spot WTI crude price fluctuations, leading to immediate operating free cash flow expansion.",
       "badge": "Observed Disclosures",
       "timestamp": "2026-10-11T12:30:00Z",
-      "uncertainty": "Derivatives hedging programs (swaps/collars) executed at lower prices can defer revenue gains for 1–2 quarters."
+      "uncertainty": "Derivatives hedging programs (swaps/collars) executed at lower prices can defer revenue gains for 1\u00e2\u20ac\u201c2 quarters."
     },
     "ev-oil-3": {
       "id": "ev-oil-3",
-      "title": "Bureau of Labor Statistics — Consumer Price Index (CPI) Energy Weighting",
+      "title": "Bureau of Labor Statistics \u00e2\u20ac\u201d Consumer Price Index (CPI) Energy Weighting",
       "source": "U.S. Bureau of Labor Statistics (BLS)",
       "confidence": 92,
-      "text": "Energy commodities and services comprise ~7.2% of the headline CPI basket. Every sustained 10% advance in retail gasoline translates to a ~0.25–0.30 percentage point addition to annualized headline CPI within 4–6 weeks.",
+      "text": "Energy commodities and services comprise ~7.2% of the headline CPI basket. Every sustained 10% advance in retail gasoline translates to a ~0.25\u00e2\u20ac\u201c0.30 percentage point addition to annualized headline CPI within 4\u00e2\u20ac\u201c6 weeks.",
       "badge": "Observed Macro",
       "timestamp": "2026-10-11T13:00:00Z",
       "uncertainty": "Consumer demand destruction or retail margin compression by fuel distributors can dampen initial pass-through."
     },
     "ev-oil-4": {
       "id": "ev-oil-4",
-      "title": "Federal Reserve FOMC Minutes — Inflation Expectations & Policy Stance",
+      "title": "Federal Reserve FOMC Minutes \u00e2\u20ac\u201d Inflation Expectations & Policy Stance",
       "source": "Federal Reserve Board of Governors",
       "confidence": 89,
       "text": "Monetary policy statements demonstrate that persistent commodity-driven headline inflation elevates the risk of un-anchoring medium-term consumer inflation expectations, constraining central bank rate cuts.",
@@ -507,7 +824,7 @@
     },
     "ev-oil-6": {
       "id": "ev-oil-6",
-      "title": "Federal Reserve H.8 Bank Assets & Liabilities — Deposit Beta Sensitivity",
+      "title": "Federal Reserve H.8 Bank Assets & Liabilities \u00e2\u20ac\u201d Deposit Beta Sensitivity",
       "source": "Federal Reserve Statistical Release",
       "confidence": 80,
       "text": "Higher market interest rates force commercial depository institutions to raise deposit rates to stem disintermediation into money market funds, raising wholesale funding expenses.",
@@ -517,7 +834,7 @@
     },
     "ev-oil-7": {
       "id": "ev-oil-7",
-      "title": "FDIC Quarterly Banking Profile — Net Interest Margin (NIM) Dynamics",
+      "title": "FDIC Quarterly Banking Profile \u00e2\u20ac\u201d Net Interest Margin (NIM) Dynamics",
       "source": "Federal Deposit Insurance Corporation",
       "confidence": 74,
       "text": "Yield curve flattening and higher liabilities cost compress commercial bank Net Interest Margins (NIM), while tighter lending standards slow credit origination volume.",
@@ -537,7 +854,7 @@
     },
     "ev-oil-9": {
       "id": "ev-oil-9",
-      "title": "National Association of Realtors — Housing Affordability Index",
+      "title": "National Association of Realtors \u00e2\u20ac\u201d Housing Affordability Index",
       "source": "NAR Research & Analytics",
       "confidence": 82,
       "text": "Each 50 bps rise in mortgage borrowing rates raises median monthly debt service by ~4.5%, dampening transaction velocity and widening commercial REIT capitalization rates.",
@@ -557,13 +874,13 @@
     },
     "ev-oil-11": {
       "id": "ev-oil-11",
-      "title": "Bureau of Transportation Statistics — Airline Fuel Cost & Consumption",
+      "title": "Bureau of Transportation Statistics \u00e2\u20ac\u201d Airline Fuel Cost & Consumption",
       "source": "U.S. Department of Transportation",
       "confidence": 87,
-      "text": "Jet fuel represents 30–35% of airline operating expense. Unhedged carriers experience immediate EBIT margin compression unless passenger fare yields can be raised rapidly.",
+      "text": "Jet fuel represents 30\u00e2\u20ac\u201c35% of airline operating expense. Unhedged carriers experience immediate EBIT margin compression unless passenger fare yields can be raised rapidly.",
       "badge": "Observed SEC Disclosures",
       "timestamp": "2026-10-11T17:00:00Z",
-      "uncertainty": "Airlines with proactive financial hedging (call options/collars) can buffer fuel expenses for up to 9–12 months."
+      "uncertainty": "Airlines with proactive financial hedging (call options/collars) can buffer fuel expenses for up to 9\u00e2\u20ac\u201c12 months."
     },
     "ev-oil-12": {
       "id": "ev-oil-12",
@@ -577,7 +894,7 @@
     },
     "ev-oil-13": {
       "id": "ev-oil-13",
-      "title": "Institute for Supply Management (ISM) Manufacturing Index — Prices Paid",
+      "title": "Institute for Supply Management (ISM) Manufacturing Index \u00e2\u20ac\u201d Prices Paid",
       "source": "Institute for Supply Management",
       "confidence": 71,
       "text": "Elevated energy costs push the ISM Prices Paid sub-index higher, signaling manufacturing margin contraction when downstream consumer price elasticity restricts cost pass-through.",
@@ -597,7 +914,7 @@
     },
     "ev-oil-15": {
       "id": "ev-oil-15",
-      "title": "Capital Asset Pricing Model (CAPM) — Discount Rate Sensitivity",
+      "title": "Capital Asset Pricing Model (CAPM) \u00e2\u20ac\u201d Discount Rate Sensitivity",
       "source": "Financial Market Econometrics",
       "confidence": 84,
       "text": "Higher risk-free benchmark yields raise corporate Weighted Average Cost of Capital (WACC), reducing the net present value (NPV) of long-duration equity cash flows.",

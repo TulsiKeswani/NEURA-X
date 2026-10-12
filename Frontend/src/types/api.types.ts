@@ -68,6 +68,12 @@ export interface IngestionStatus {
   vector_chunks_stored: number
 }
 
+export interface StageLog {
+  stage: number
+  name: string
+  status: "Success" | "In_Progress" | "Pending" | "Failed"
+}
+
 /** Top-level response from POST /api/analyze — mirrors GraphResponseSchema */
 export interface GraphResponse {
   query: string
@@ -79,6 +85,8 @@ export interface GraphResponse {
   affected_assets: AffectedAsset[]
   evidence: Record<string, EvidenceItem>
   ingestion_status: IngestionStatus
+  pipeline_status?: "Completed" | "In_Progress" | "Failed"
+  stage_logs?: StageLog[]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -140,3 +148,74 @@ export interface VectorDBStream {
   vector_chunks_stored: number
   recent_headlines: Headline[]
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VECTOR DB LIVE MONITOR TYPES
+// Mirrors the return shape of GET /api/vectordb/documents
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface VectorDBDocument {
+  chunk_id: string
+  text_content: string
+  publisher: string
+  source_tier: "Tier 1" | "Tier 2" | "Tier 3" | string
+  source_trust_score: number
+  primary_ticker_mentions: string[]
+  created_at: string
+}
+
+export interface BlockedDuplicate {
+  text: string
+  similarity_score: number
+  matched_text: string
+  timestamp: string
+}
+
+export interface DeduplicationAudit {
+  duplicates_blocked_count: number
+  recent_duplicates_blocked: BlockedDuplicate[]
+}
+
+/** Response from GET /api/vectordb/documents */
+export interface VectorDBDocumentsResponse {
+  total_documents: number
+  background_poller_active: boolean
+  poll_interval_seconds: number
+  semantic_dedup_threshold: number
+  duplicates_blocked_count: number
+  documents: VectorDBDocument[]
+  dedup_audit: DeduplicationAudit
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROMPT 3: VECTOR RETRIEVAL & USER ACTIVITY TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RetrievedNewsItem {
+  chunk_id: string
+  similarity_score: number
+  headline: string
+  snippet: string
+  source: string
+  source_tier?: string
+  source_trust_score?: number
+}
+
+export interface UserActivityItem {
+  activity_id: string
+  query_text: string
+  timestamp: string
+  status: "Completed" | "Pending" | "Failed" | string
+  retrieved_count?: number
+  entity_tags?: string[]
+}
+
+export interface SearchRetrievalResponse {
+  query_metadata: {
+    user_query: string
+    timestamp: string
+  }
+  retrieved_news: RetrievedNewsItem[]
+  updated_user_history: UserActivityItem[]
+}
+

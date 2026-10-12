@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion"
 import {
+  Activity,
   ArrowRight,
   BarChart3,
   Bell,
@@ -8,6 +9,7 @@ import {
   Building2,
   Check,
   ChevronDown,
+  ChevronRight,
   CircleDollarSign,
   Copy,
   Database,
@@ -23,12 +25,15 @@ import {
   Layers,
   LineChart,
   Loader2,
+  Lock,
   Network,
   RefreshCw,
   Search,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Terminal,
   TrendingUp,
   UserRound,
   X,
@@ -40,6 +45,9 @@ import {
   analyzeEvent,
   fetchIngestionStatus,
   fetchMarketData,
+  fetchVectorDBDocuments,
+  executeSemanticSearch,
+  fetchUserActivityHistory,
   triggerIngestion,
   isMockMode,
   isLiveBackendActive,
@@ -56,6 +64,12 @@ import type {
   GraphNode,
   TimeSeriesResponse,
   VectorDBStream,
+  VectorDBDocumentsResponse,
+  VectorDBDocument,
+  BlockedDuplicate,
+  RetrievedNewsItem,
+  UserActivityItem,
+  SearchRetrievalResponse,
   PricePoint,
   BenchmarkPoint,
 } from "@/types/api.types"
@@ -141,6 +155,249 @@ function LoadingSpinner({ label = "Loading..." }: { label?: string }) {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PROMPT 4: 6-STAGE PIPELINE PROGRESS MODAL & DYNAMIC MOVING STEPS UI
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PIPELINE_STAGES = [
+  { stage: 1, name: "Extracting relevant news from Vector DB", desc: "Querying ChromaDB vector embeddings & cosine nearest neighbors" },
+  { stage: 2, name: "Applying NLP & Extracting Entities", desc: "Extracting institutions, commodities, tickers, & sentiment orientation" },
+  { stage: 3, name: "Identifying Affected Sectors", desc: "Mapping direct tier-1 industries & secondary economic spillovers" },
+  { stage: 4, name: "Calculating Scores & Validating Evidences", desc: "Computing directional impact weights (-1.0 to +1.0) & XAI citations" },
+  { stage: 5, name: "Creating Knowledge Graph", desc: "Constructing NetworkX causal DAG nodes, edges, & hierarchy" },
+  { stage: 6, name: "Generating Propagation Path", desc: "Tracing Hop 0 to Hop 4 chronological shock cascade multi-chains" },
+]
+
+function PipelineProgressModal({
+  currentStage,
+  query,
+}: {
+  currentStage: number
+  query: string
+}) {
+  const progressPct = Math.min(100, Math.round(((currentStage + 1) / 6) * 100))
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        background: "rgba(15, 23, 42, 0.75)",
+        backdropFilter: "blur(6px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <motion.div
+        initial={{ scale: 0.92, y: 16 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.92, y: 16 }}
+        style={{
+          background: "#ffffff",
+          borderRadius: 20,
+          border: "1px solid #cbd5e1",
+          boxShadow: "0 25px 60px -15px rgba(15, 23, 42, 0.35)",
+          width: "100%",
+          maxWidth: 620,
+          padding: "28px 32px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+        }}
+      >
+        {/* Modal Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span
+                style={{
+                  background: "#eff6ff",
+                  color: "#1d4ed8",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "3px 8px",
+                  borderRadius: 14,
+                  border: "1px solid #bfdbfe",
+                }}
+              >
+                PROMPT 4 ORCHESTRATOR
+              </span>
+              <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                6-Stage Financial Pipeline
+              </span>
+            </div>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#0f172a" }}>
+              Processing Financial Event Shock
+            </h2>
+            <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "#475569" }}>
+              "{query.length > 55 ? query.slice(0, 55) + "…" : query}"
+            </p>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <span style={{ fontSize: 24, fontWeight: 800, color: "#2563eb", lineHeight: 1 }}>
+              {progressPct}%
+            </span>
+            <small style={{ display: "block", fontSize: 10.5, color: "#94a3b8", fontWeight: 600 }}>
+              Stage {Math.min(6, currentStage + 1)} of 6
+            </small>
+          </div>
+        </div>
+
+        {/* Dynamic Moving Progress Bar */}
+        <div
+          style={{
+            height: 8,
+            background: "#e2e8f0",
+            borderRadius: 20,
+            overflow: "hidden",
+            position: "relative",
+          }}
+        >
+          <motion.div
+            initial={{ width: "0%" }}
+            animate={{ width: `${progressPct}%` }}
+            transition={{ duration: 0.45, ease: "easeOut" }}
+            style={{
+              height: "100%",
+              background: "linear-gradient(90deg, #2563eb, #7c3aed, #06b6d4)",
+              borderRadius: 20,
+            }}
+          />
+        </div>
+
+        {/* 6 Sequential Dynamic Steps UI */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+          {PIPELINE_STAGES.map((s, idx) => {
+            const isCompleted = idx < currentStage
+            const isCurrent = idx === currentStage
+            const isPending = idx > currentStage
+
+            return (
+              <motion.div
+                key={s.stage}
+                animate={{
+                  scale: isCurrent ? 1.01 : 1,
+                  backgroundColor: isCurrent ? "#f0fdf4" : isCompleted ? "#f8fafc" : "#ffffff",
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: `1px solid ${
+                    isCurrent ? "#86efac" : isCompleted ? "#cbd5e1" : "#f1f5f9"
+                  }`,
+                  transition: "border-color 0.2s, background-color 0.2s",
+                }}
+              >
+                {/* Step indicator badge */}
+                <div
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    flexShrink: 0,
+                    background: isCompleted
+                      ? "#10b981"
+                      : isCurrent
+                      ? "#2563eb"
+                      : "#e2e8f0",
+                    color: isPending ? "#64748b" : "#ffffff",
+                    boxShadow: isCurrent ? "0 0 0 3px rgba(37,99,235,0.2)" : "none",
+                  }}
+                >
+                  {isCompleted ? <Check size={14} strokeWidth={3} /> : isCurrent ? <Loader2 size={14} className="spin" /> : s.stage}
+                </div>
+
+                {/* Step Text Info */}
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: isCurrent ? 700 : 600,
+                        color: isPending ? "#94a3b8" : "#0f172a",
+                      }}
+                    >
+                      {s.name}
+                    </span>
+                    {isCurrent && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          color: "#15803d",
+                          background: "#dcfce7",
+                          padding: "1px 6px",
+                          borderRadius: 10,
+                        }}
+                      >
+                        RUNNING
+                      </span>
+                    )}
+                    {isCompleted && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          color: "#059669",
+                          background: "#ecfdf5",
+                          padding: "1px 6px",
+                          borderRadius: 10,
+                        }}
+                      >
+                        SUCCESS
+                      </span>
+                    )}
+                  </div>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: isCurrent ? "#475569" : "#94a3b8",
+                      display: "block",
+                      marginTop: 1,
+                    }}
+                  >
+                    {s.desc}
+                  </span>
+                </div>
+              </motion.div>
+            )
+          })}
+        </div>
+
+        {/* Footer info */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            paddingTop: 8,
+            borderTop: "1px solid #f1f5f9",
+            fontSize: 11,
+            color: "#64748b",
+          }}
+        >
+          <span>Deterministic causal NetworkX compilation</span>
+          <span>Target pages will unlock upon stage 6 completion</span>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
 function ErrorBanner({ message }: { message: string }) {
   return (
     <div className="error-banner">
@@ -167,23 +424,289 @@ function BackendStatusBadge() {
 
 // ─── Landing Page ──────────────────────────────────────────────────────────────
 
-function Landing({ navigate }: { navigate: (page: Page) => void }) {
-  const capabilities = [
-    { icon: FileText, title: "Event Extraction" },
-    { icon: Network, title: "Knowledge Graph" },
-    { icon: LineChart, title: "Time-Series Analysis" },
-    { icon: FileCheck2, title: "XAI & Evidence Audit Trail" },
+function Landing({
+  navigate,
+  hasAnalyzed = false,
+}: {
+  navigate: (page: Page) => void
+  hasAnalyzed?: boolean
+}) {
+  const systemModules = [
+    {
+      code: "LNDG-01",
+      title: "Landing Page / Terminal Hub",
+      icon: Terminal,
+      category: "TELEMETRY",
+      description: "Primary system telemetry, autonomous ingestion monitoring, safety boundaries, and high-level terminal navigation.",
+      capabilities: [
+        "Continuous 60s background ingestion telemetry",
+        "Enterprise AI safety and governance boundaries",
+        "Bloomberg-style system module directory & quick launch",
+      ],
+      page: "landing" as Page,
+      badgeColor: "#38bdf8",
+    },
+    {
+      code: "CTRL-02",
+      title: "Search & Upload Control Center",
+      icon: Search,
+      category: "INGESTION",
+      description: "Vector DB natural language query interface, news search, activity history, and 6-stage analytical pipeline initiation.",
+      capabilities: [
+        "ChromaDB 384-dimensional semantic similarity search",
+        "1-click institutional preset queries (Crude, Rates, Tech)",
+        "Automated 6-stage NLP extraction & graph compilation",
+      ],
+      page: "home" as Page,
+      badgeColor: "#10b981",
+    },
+    {
+      code: "GRPH-03",
+      title: "Interactive Graph Analysis Page",
+      icon: Network,
+      category: "CAUSAL DAG",
+      description: "Multi-hop directional impact graph, progressive drill-down, sector spillover blocks, and embedded AI Financial Copilot.",
+      capabilities: [
+        "Level 1 Sectors → Level 2 Spillovers → Level 3 Assets drill-down",
+        "Color-coded hike/drop badges (▲/▼) with glow borders",
+        "PageRank algorithm & ML Risk Score inspection per node",
+      ],
+      page: "graph" as Page,
+      badgeColor: "#8b5cf6",
+    },
+    {
+      code: "PATH-04",
+      title: "Propagation Path Page",
+      icon: GitBranch,
+      category: "TIMELINE",
+      description: "Sequential multi-chain path tracing and cascading sidebar risk analysis across 4 deterministic hop layers.",
+      capabilities: [
+        "Hop 0 to Hop 4 chronological shock cascade timeline",
+        "Affected assets portfolio distribution with confidence %",
+        "Cross-edge transmission and causal feedback loops",
+      ],
+      page: "path" as Page,
+      badgeColor: "#f59e0b",
+    },
+    {
+      code: "TSER-05",
+      title: "Time-Series Quantitative View",
+      icon: LineChart,
+      category: "EMPIRICAL",
+      description: "Empirical backtesting, Base 100 price normalization, and statistical Pearson correlation metrics vs. market benchmarks.",
+      capabilities: [
+        "Real market data fusion via quantitative provider (yfinance)",
+        "Pearson correlation calculation vs. S&P 500 benchmark (^GSPC)",
+        "Volume volatility bands and empirical shock validation",
+      ],
+      page: "timeseries" as Page,
+      badgeColor: "#06b6d4",
+    },
+    {
+      code: "EVID-06",
+      title: "Explainability & Evidence Audit Page",
+      icon: ShieldCheck,
+      category: "AUDIT TRAIL",
+      description: "Transparent XAI evidence provenance, verbatim news wire excerpts, and strict Fact vs. Inference attribution.",
+      capabilities: [
+        "100% grounded citations from verified market wires",
+        "Explicit visual badge separation: Fact vs. Inferred Relation",
+        "Verbatim source text audit trails with confidence metrics",
+      ],
+      page: "evidence" as Page,
+      badgeColor: "#ec4899",
+    },
   ]
+
+  const productStories = [
+    {
+      step: "01",
+      badge: "Ingestion & Vector Retrieval",
+      title: "Search & Ingestion Control Center",
+      subtitle: "Autonomous News Ingestion & 6-Stage Analytical Pipeline Initiation",
+      description:
+        "Every market analysis starts at the Control Center. Analysts can enter custom financial shock hypotheses or leverage automated background RSS ingestion that continuously parses financial wires every 60 seconds into a persistent ChromaDB vector store.",
+      points: [
+        {
+          title: "ChromaDB Semantic Search",
+          desc: "Translates unstructured macroeconomic news into 384-dimensional vector embeddings with cosine similarity matching.",
+        },
+        {
+          title: "Preset Market Scenarios",
+          desc: "Instant access to pre-calibrated institutional events: Crude Oil Shocks, Semiconductor Export Bans, Federal Reserve Rate Hikes.",
+        },
+        {
+          title: "Live Ingestion Stream Telemetry",
+          desc: "Real-time visibility into articles processed, vector chunks committed, and ingestion poller heartbeat.",
+        },
+      ],
+      image: "/screenshots/page_home.png",
+      alt: "Control Center Search and Upload View",
+      page: "home" as Page,
+      btnText: "Open Search Control Center",
+    },
+    {
+      step: "02",
+      badge: "Causal Graph Intelligence",
+      title: "Interactive Multi-Hop Knowledge Graph",
+      subtitle: "Progressive Clutter-Free Drill-Down from Sectors to Target Assets",
+      description:
+        "Rather than overwhelming analysts with all nodes at once, FinGraph starts with clean Level 1 primary sectors. Clicking any sector unfolds secondary cross-industry spillovers, individual company assets, and macro indices with color-coded hike/drop badges.",
+      points: [
+        {
+          title: "Progressive Multi-Level Expansion",
+          desc: "Main event branches into High Sectors (Airlines, Transport, Petrochemicals). Clicking a sector unlocks downstream assets ($DAL, $FDX, $DOW).",
+        },
+        {
+          title: "Hike & Drop Badges with Glow Cues",
+          desc: "Every node displays exact percentage impact (▲ +12.0% / ▼ -6.8%), Affecting Score, and directional glow outlines.",
+        },
+        {
+          title: "Embedded AI Financial Copilot",
+          desc: "Chat directly with an integrated AI Copilot grounded exclusively on the graph's nodes, edges, and evidence trail.",
+        },
+      ],
+      isMockup: true,
+      page: "graph" as Page,
+      btnText: "Explore Knowledge Graph",
+    },
+    {
+      step: "03",
+      badge: "Chronological Causal Cascade",
+      title: "Sequential Propagation Path Tracing",
+      subtitle: "Step-by-Step Hop Chain Timeline with Cascading ML Risk Scores",
+      description:
+        "Trace the exact sequential path of market contagion from Hop 0 (Catalyst Trigger) through Hop 1 (Commodity Shock), Hop 2 (Sector Margin Shift), Hop 3 (Asset Valuation Drag), and Hop 4 (Macro Inflation CPI & S&P 500 Index).",
+      points: [
+        {
+          title: "Chronological Hop Timeline",
+          desc: "Visual sequence pipeline showing how raw commodity shocks transmit into corporate operating margins over time.",
+        },
+        {
+          title: "NetworkX PageRank & ML Risk Scores",
+          desc: "Algorithmic graph centrality identifies high-systemic-risk bottlenecks in the financial dependency network.",
+        },
+        {
+          title: "Portfolio Asset Impact Table",
+          desc: "Comprehensive breakdown of all affected equities with tickers, sentiment direction, and confidence percentages.",
+        },
+      ],
+      image: "/screenshots/page_path.png",
+      alt: "Propagation Path Sequential Timeline View",
+      page: "path" as Page,
+      btnText: "Trace Propagation Path",
+    },
+    {
+      step: "04",
+      badge: "Empirical Market Validation",
+      title: "Quantitative Time-Series Analysis",
+      subtitle: "Empirical Backtesting & Pearson Correlation vs. S&P 500 Benchmark",
+      description:
+        "Qualitative AI inferences are useless without mathematical market validation. FinGraph automatically retrieves historical price series for affected tickers and computes Pearson correlation against the S&P 500 benchmark (^GSPC) to verify fundamental relationships.",
+      points: [
+        {
+          title: "Base 100 Price Normalization",
+          desc: "Normalizes divergent stock prices and commodities onto an identical relative scale to clearly isolate shock reaction.",
+        },
+        {
+          title: "Pearson Correlation Coefficient (r)",
+          desc: "Calculates mathematical co-movement vs. broad market indices to separate systematic macro trends from idiosyncratic shocks.",
+        },
+        {
+          title: "Dynamic Period Lookbacks",
+          desc: "Seamlessly toggles between 1-month, 3-month, 6-month, and 1-year historical trading windows.",
+        },
+      ],
+      image: "/screenshots/page_timeseries.png",
+      alt: "Time-Series Quantitative Backtesting View",
+      page: "timeseries" as Page,
+      btnText: "Analyze Time-Series",
+    },
+  ]
+
   return (
     <motion.main className="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <BackendStatusBadge />
+      {/* ─── BLOOMBERG TERMINAL TELEMETRY TICKER BAR ────────────────────── */}
+      <div className="terminal-ticker-bar">
+        <div className="ticker-segment">
+          <span className="status-live" />
+          <span className="badge">SYS: NOMINAL</span>
+          <span>FINGRAPH TERMINAL v3.0</span>
+        </div>
+        <div className="ticker-segment">
+          <span className="badge">FEED</span>
+          <span>CHROMA VECTOR DB // 384-DIM PARQUET</span>
+        </div>
+        <div className="ticker-segment">
+          <span className="badge">ENGINE</span>
+          <span>NETWORKX DETERMINISTIC IN-MEMORY DAG</span>
+        </div>
+        <div className="ticker-segment">
+          <span className="badge">AI REASONING</span>
+          <span>GEMINI 2.5 FLASH + PRO HYBRID</span>
+        </div>
+        <div className="ticker-segment">
+          <span className="badge">GROUNDING</span>
+          <span style={{ color: "#10b981", fontWeight: 700 }}>100% EVIDENCE AUDITED</span>
+        </div>
+      </div>
+
       <header className="landing-header">
         <Logo onClick={() => navigate("landing")} />
         <nav className="top-nav" aria-label="Landing navigation">
-          <button onClick={() => navigate("home")}>Overview</button>
-          <button onClick={() => navigate("graph")}>Knowledge Graph</button>
-          <button onClick={() => navigate("path")}>Propagation Path</button>
-          <button onClick={() => navigate("home")}>Demo Control Center</button>
+          <button onClick={() => navigate("home")}>Control Center</button>
+          <button
+            onClick={() => {
+              if (!hasAnalyzed) {
+                alert("Please launch and execute an event in the Control Center first to generate the multi-stage analysis!")
+                navigate("home")
+                return
+              }
+              navigate("graph")
+            }}
+            style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
+          >
+            Knowledge Graph {!hasAnalyzed && "🔒"}
+          </button>
+          <button
+            onClick={() => {
+              if (!hasAnalyzed) {
+                alert("Please launch and execute an event in the Control Center first to trace the propagation path!")
+                navigate("home")
+                return
+              }
+              navigate("path")
+            }}
+            style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
+          >
+            Propagation Path {!hasAnalyzed && "🔒"}
+          </button>
+          <button
+            onClick={() => {
+              if (!hasAnalyzed) {
+                alert("Please launch and execute an event in the Control Center first to unlock quantitative time-series!")
+                navigate("home")
+                return
+              }
+              navigate("timeseries")
+            }}
+            style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
+          >
+            Time-Series {!hasAnalyzed && "🔒"}
+          </button>
+          <button
+            onClick={() => {
+              if (!hasAnalyzed) {
+                alert("Please launch and execute an event in the Control Center first to inspect the evidence audit trail!")
+                navigate("home")
+                return
+              }
+              navigate("evidence")
+            }}
+            style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
+          >
+            Evidence Audit {!hasAnalyzed && "🔒"}
+          </button>
         </nav>
         <div className="header-actions">
           <AppButton onClick={() => navigate("home")}>
@@ -192,6 +715,7 @@ function Landing({ navigate }: { navigate: (page: Page) => void }) {
         </div>
       </header>
 
+      {/* ─── HERO SECTION ──────────────────────────────────────────────── */}
       <section className="hero">
         <motion.div
           className="hero-copy"
@@ -200,27 +724,34 @@ function Landing({ navigate }: { navigate: (page: Page) => void }) {
           transition={{ duration: 0.65 }}
         >
           <div className="eyebrow">
-            <span className="live-dot" /> High-Density Financial Market Intelligence
+            <span className="live-dot" /> Institutional Market Contagion & Financial Dependency Terminal
           </div>
           <h1>
-            From Financial
+            From Macro
             <br />
             Events to <span>Market</span>
             <br />
-            <em>Impact</em>
+            <em>Contagion</em>
           </h1>
           <p>
-            Trace how global shocks propagate across sectors and assets with deterministic
-            in-memory graph traversal, real-time market data fusion, and verifiable XAI audit trails.
+            An enterprise-grade financial intelligence system that maps how global shocks propagate across
+            sectors, industries, and asset prices with deterministic multi-hop graphs, empirical time-series
+            validation, and verifiable XAI audit trails.
           </p>
+
           <div className="capability-row">
-            {capabilities.map((item, index) => (
+            {[
+              { icon: Search, title: "Vector DB Ingestion" },
+              { icon: Network, title: "Multi-Hop Causal DAG" },
+              { icon: LineChart, title: "Empirical Backtesting" },
+              { icon: ShieldCheck, title: "100% Grounded XAI" },
+            ].map((item, index) => (
               <motion.div
                 className="capability"
                 key={item.title}
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
-                transition={{ delay: 0.3 + index * 0.08 }}
+                transition={{ delay: 0.2 + index * 0.08 }}
               >
                 <span>
                   <item.icon size={17} />
@@ -229,9 +760,35 @@ function Landing({ navigate }: { navigate: (page: Page) => void }) {
               </motion.div>
             ))}
           </div>
-          <AppButton onClick={() => navigate("home")} className="hero-cta">
-            Open Control Center <ArrowRight size={16} />
-          </AppButton>
+
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <AppButton onClick={() => navigate("home")} className="hero-cta">
+              Open Control Center <ArrowRight size={16} />
+            </AppButton>
+            <button
+              type="button"
+              onClick={() => {
+                const el = document.getElementById("system-guide-section")
+                if (el) el.scrollIntoView({ behavior: "smooth" })
+              }}
+              style={{
+                background: "transparent",
+                border: "1px solid #cbd5e1",
+                padding: "0 18px",
+                minHeight: 46,
+                borderRadius: 9,
+                fontSize: 13,
+                fontWeight: 700,
+                color: "#1e293b",
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Terminal size={14} color="#2563eb" /> System Architecture Guide
+            </button>
+          </div>
         </motion.div>
 
         <div className="hero-visual" aria-label="Animated financial event graph">
@@ -248,41 +805,341 @@ function Landing({ navigate }: { navigate: (page: Page) => void }) {
         </div>
       </section>
 
-      <section className="system-strip">
-        <div>
-          <span className="section-kicker">How Our System Works</span>
-          <h2>Market intelligence, continuously connected.</h2>
-          <p>Autonomous background ingestion polling financial news every 60 seconds.</p>
+      {/* ─── SYSTEM ARCHITECTURE & BLOOMBERG-STYLE FUNCTIONAL GUIDE ─────── */}
+      <section className="terminal-section-wrap" id="system-guide-section">
+        <div className="section-headline-block">
+          <span className="terminal-tag">
+            <Terminal size={13} /> High-Density Terminal Specification
+          </span>
+          <h2>Enterprise Functional System Guide</h2>
+          <p>
+            Structured architectural matrix detailing the functional purpose, data flows, and analytical
+            capabilities of every operational page within the FinGraph platform.
+          </p>
         </div>
-        <div className="pipeline">
-          {[
-            [Database, "Ingest", "RSS & Market Wires"],
-            [Sparkles, "Extract", "Entities & Relations"],
-            [Network, "Build", "Multi-Hop Graph"],
-            [LineChart, "Validate", "Quantitative Time-Series"],
-          ].map(([Icon, title, text], index) => (
-            <div className="pipeline-step" key={String(title)}>
-              <span>
-                <Icon size={16} />
-              </span>
+
+        <div className="terminal-guide-grid">
+          {systemModules.map((mod) => (
+            <div className="guide-card" key={mod.code}>
               <div>
-                <strong>{String(title)}</strong>
-                <small>{String(text)}</small>
+                <div className="guide-card-header">
+                  <div className="guide-card-icon" style={{ color: mod.badgeColor }}>
+                    <mod.icon size={20} />
+                  </div>
+                  <span className="guide-cmd-code">{mod.code}</span>
+                </div>
+                <h3>{mod.title}</h3>
+                <p className="guide-desc">{mod.description}</p>
+                <ul className="guide-capabilities-list">
+                  {mod.capabilities.map((cap, i) => (
+                    <li key={i}>
+                      <Check size={14} />
+                      <span>{cap}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
-              {index < 3 && <ArrowRight className="pipeline-arrow" size={15} />}
+              <button
+                type="button"
+                className="guide-card-btn"
+                onClick={() => navigate(mod.page)}
+              >
+                <span>Launch {mod.title.split("/")[0]}</span>
+                <ChevronRight size={14} />
+              </button>
             </div>
           ))}
         </div>
-        <div className="boundaries">
-          <span className="section-kicker">AI Operational Boundaries</span>
-          <p><Check size={13} color="#10b981" /> No absolute price predictions</p>
-          <p><Check size={13} color="#10b981" /> Explicit Fact vs Inference attribution</p>
-          <p><Check size={13} color="#10b981" /> Deterministic quantitative validation</p>
+      </section>
+
+      {/* ─── PRODUCT STORY & FEATURE WALKTHROUGH (SIDE-BY-SIDE) ───────── */}
+      <section className="terminal-section-wrap">
+        <div className="section-headline-block">
+          <span className="terminal-tag">
+            <Sparkles size={13} /> Product Feature Walkthrough
+          </span>
+          <h2>How FinGraph Solves Market Intelligence</h2>
+          <p>
+            Explore each core functionality side-by-side with institutional design rationale, visual interface
+            blueprints, and verified analytical workflows.
+          </p>
+        </div>
+
+        <div className="product-story-showcase">
+          {productStories.map((story, idx) => (
+            <div
+              className={`story-showcase-row ${idx % 2 === 1 ? "reversed" : ""}`}
+              key={story.step}
+            >
+              <div className="story-info">
+                <span className="story-badge">
+                  {story.step} // {story.badge}
+                </span>
+                <h3>{story.title}</h3>
+                <strong style={{ fontSize: 15, color: "#1e293b", fontWeight: 700 }}>
+                  {story.subtitle}
+                </strong>
+                <p>{story.description}</p>
+
+                <div className="story-feature-points">
+                  {story.points.map((pt, pIdx) => (
+                    <div className="story-point-item" key={pIdx}>
+                      <span className="story-point-bullet">{pIdx + 1}</span>
+                      <div className="story-point-text">
+                        <strong>{pt.title}</strong>
+                        <span>{pt.desc}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  className="story-action-btn"
+                  onClick={() => navigate(story.page)}
+                >
+                  {story.btnText} <ArrowRight size={14} />
+                </button>
+              </div>
+
+              <div className="story-frame">
+                <div className="story-frame-bar">
+                  <div className="window-dots">
+                    <span className="window-dot red" />
+                    <span className="window-dot yellow" />
+                    <span className="window-dot green" />
+                  </div>
+                  <span className="window-title">fingraph://terminal/{story.page}</span>
+                  <span className="window-status-pill">LIVE RENDER</span>
+                </div>
+                <div className="story-frame-body">
+                  {story.isMockup ? (
+                    /* Interactive Graph Visual Mockup */
+                    <div
+                      style={{
+                        padding: 24,
+                        background: "#09131f",
+                        minHeight: 320,
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "space-between",
+                        fontFamily: "'Inter', sans-serif",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 700, letterSpacing: "0.04em" }}>
+                          PROGRESSIVE DISCLOSURE CAUSAL TREE (4 LEVELS)
+                        </span>
+                        <span style={{ background: "#1e293b", color: "#38bdf8", padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                          15 NODES · 16 EDGES
+                        </span>
+                      </div>
+
+                      {/* Mockup nodes diagram */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, margin: "22px 0", flexWrap: "wrap" }}>
+                        {/* Root Node */}
+                        <div style={{ background: "#1e293b", border: "2px solid #f59e0b", padding: "10px 14px", borderRadius: 10, textAlign: "center", boxShadow: "0 0 16px rgba(245,158,11,0.25)" }}>
+                          <span style={{ display: "block", fontSize: 9, color: "#f59e0b", fontWeight: 800 }}>ROOT EVENT (HOP 0)</span>
+                          <strong style={{ fontSize: 12, color: "#ffffff" }}>Crude Oil +12% Surge</strong>
+                          <span style={{ display: "inline-block", background: "#15803d", color: "#ffffff", padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 800, marginTop: 4 }}>
+                            ▲ +12.0% HIKE
+                          </span>
+                        </div>
+
+                        <ArrowRight size={18} color="#64748b" />
+
+                        {/* Level 1 Sectors */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          <div style={{ background: "#1e293b", border: "1px solid #10b981", padding: "7px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10b981" }} />
+                            <span style={{ fontSize: 11, color: "#f8fafc", fontWeight: 600 }}>Upstream Energy (+8.4%)</span>
+                            <span style={{ fontSize: 9, background: "#065f46", color: "#6ee7b7", padding: "1px 5px", borderRadius: 3, fontWeight: 800 }}>+ 2 Assets</span>
+                          </div>
+                          <div style={{ background: "#1e293b", border: "1px solid #ef4444", padding: "7px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444" }} />
+                            <span style={{ fontSize: 11, color: "#f8fafc", fontWeight: 600 }}>Airlines Aviation (-7.0%)</span>
+                            <span style={{ fontSize: 9, background: "#991b1b", color: "#fca5a5", padding: "1px 5px", borderRadius: 3, fontWeight: 800 }}>+ 1 Asset</span>
+                          </div>
+                          <div style={{ background: "#1e293b", border: "1px solid #ef4444", padding: "7px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444" }} />
+                            <span style={{ fontSize: 11, color: "#f8fafc", fontWeight: 600 }}>Freight Logistics (-4.8%)</span>
+                            <span style={{ fontSize: 9, background: "#991b1b", color: "#fca5a5", padding: "1px 5px", borderRadius: 3, fontWeight: 800 }}>+ 2 Assets</span>
+                          </div>
+                        </div>
+
+                        <ArrowRight size={18} color="#64748b" />
+
+                        {/* Level 2 & 3 Target Assets */}
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
+                            $XOM ExxonMobil (<span style={{ color: "#34d399" }}>▲ +7.4%</span>)
+                          </div>
+                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
+                            $DAL Delta Air (<span style={{ color: "#f87171" }}>▼ -6.7%</span>)
+                          </div>
+                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
+                            $FDX FedEx Corp (<span style={{ color: "#f87171" }}>▼ -4.6%</span>)
+                          </div>
+                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
+                            CPI Inflation (<span style={{ color: "#34d399" }}>▲ +3.8%</span>)
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ borderTop: "1px solid #1e293b", paddingTop: 10, display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b" }}>
+                        <span>GRAPH ALGO: PAGERANK CENTRALITY</span>
+                        <span>ML ALGO: MULTI-FACTOR RISK SCORE</span>
+                        <span>EMBEDDED AI COPILOT: ACTIVE</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <img
+                      src={story.image}
+                      alt={story.alt}
+                      className="story-frame-img"
+                    />
+                  )}
+                  <div className="story-frame-overlay-badge">
+                    <Activity size={12} color="#10b981" /> Verified Production UI
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ─── SYSTEM AI SAFETY & GOVERNANCE BOUNDARIES (BLOOMBERG STANDARD) ── */}
+      <section className="terminal-section-wrap">
+        <div className="terminal-safety-box">
+          <div className="safety-header">
+            <div className="safety-header-left">
+              <div className="safety-icon-seal">
+                <ShieldCheck size={24} />
+              </div>
+              <div>
+                <h3>System AI Safety & Governance Boundaries</h3>
+                <p>Institutional Compliance and Operational Guardrails Specification</p>
+              </div>
+            </div>
+            <span className="safety-compliance-badge">GOVERNANCE LEVEL 4 · AUDITED</span>
+          </div>
+
+          <div className="safety-triad-grid">
+            <div className="safety-triad-card">
+              <span className="safety-pill amber">
+                <Lock size={12} /> Execution Boundary
+              </span>
+              <h4>1. Zero Automated Trade Execution</h4>
+              <p>
+                FinGraph functions exclusively as a deterministic decision-support terminal. The platform
+                strictly prohibits automated trade execution, broker API routing, or autonomous order entry,
+                eliminating algorithmic execution and flash-crash risks.
+              </p>
+            </div>
+
+            <div className="safety-triad-card">
+              <span className="safety-pill blue">
+                <Activity size={12} /> Forecasting Boundary
+              </span>
+              <h4>2. No Fixed Future Stock Price Predictions</h4>
+              <p>
+                The terminal rejects black-box prophetic price targets. All outputs model conditional causal
+                transmission probabilities, sector impact deltas, and empirical historical correlations rather than
+                fabricating absolute future stock prices.
+              </p>
+            </div>
+
+            <div className="safety-triad-card">
+              <span className="safety-pill green">
+                <Check size={12} /> Grounding Boundary
+              </span>
+              <h4>3. 100% Verifiable Evidence Grounding</h4>
+              <p>
+                Every causal link and dependency edge is explicitly grounded in indexed financial news articles or
+                verifiable SEC filings. Inferred relationships are transparently badged with confidence scores and
+                audit trails to guarantee zero model hallucinations.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ─── CALL TO ACTION BANNER ─────────────────────────────────────── */}
+      <section className="terminal-section-wrap" style={{ marginBottom: 60 }}>
+        <div
+          style={{
+            background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
+            borderRadius: 16,
+            padding: "36px 40px",
+            color: "#ffffff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 20,
+            boxShadow: "0 16px 40px rgba(37, 99, 235, 0.25)",
+          }}
+        >
+          <div>
+            <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", opacity: 0.9 }}>
+              READY FOR QUANTITATIVE MARKET INTELLIGENCE?
+            </span>
+            <h2 style={{ fontFamily: "Plus Jakarta Sans", fontSize: 26, fontWeight: 700, margin: "6px 0 8px" }}>
+              Launch the FinGraph Terminal Console
+            </h2>
+            <p style={{ margin: 0, fontSize: 14, opacity: 0.9, maxWidth: 620 }}>
+              Query live macro events, inspect progressive multi-hop graphs, and validate causal market impacts
+              against real historical quantitative benchmarks.
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 12 }}>
+            <button
+              type="button"
+              onClick={() => navigate("home")}
+              style={{
+                background: "#ffffff",
+                color: "#1d4ed8",
+                border: "none",
+                borderRadius: 10,
+                padding: "12px 24px",
+                fontSize: 14,
+                fontWeight: 700,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                boxShadow: "0 4px 14px rgba(0, 0, 0, 0.15)",
+              }}
+            >
+              Enter Terminal <ArrowRight size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("graph")}
+              style={{
+                background: "rgba(255, 255, 255, 0.15)",
+                color: "#ffffff",
+                border: "1px solid rgba(255, 255, 255, 0.3)",
+                borderRadius: 10,
+                padding: "12px 20px",
+                fontSize: 14,
+                fontWeight: 700,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <Network size={16} /> View Knowledge Graph
+            </button>
+          </div>
         </div>
       </section>
     </motion.main>
   )
 }
+
 
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
@@ -290,10 +1147,12 @@ function Sidebar({
   page,
   navigate,
   ingestionStatus,
+  hasAnalyzed,
 }: {
   page: Page
   navigate: (page: Page) => void
   ingestionStatus: VectorDBStream | null
+  hasAnalyzed: boolean
 }) {
   const lastUpdated = ingestionStatus
     ? new Date(ingestionStatus.timestamp).toLocaleTimeString([], {
@@ -307,17 +1166,39 @@ function Sidebar({
     <aside className="sidebar">
       <Logo onClick={() => navigate("landing")} />
       <nav className="side-nav" aria-label="Application navigation">
-        {pages.map((item) => (
-          <button
-            className={page === item.id ? "active" : ""}
-            key={item.id}
-            onClick={() => navigate(item.id)}
-          >
-            <item.icon size={16} />
-            <span>{item.label}</span>
-            {page === item.id && <motion.i layoutId="nav-pill" transition={spring} />}
-          </button>
-        ))}
+        {pages.map((item) => {
+          const isLocked = !hasAnalyzed && item.id !== "home"
+          return (
+            <button
+              className={`${page === item.id ? "active" : ""} ${isLocked ? "disabled-nav" : ""}`}
+              key={item.id}
+              onClick={() => {
+                if (isLocked) {
+                  alert("Execute an event analysis from the Control Center first to unlock the 6-stage analytical pipeline!")
+                  return
+                }
+                navigate(item.id)
+              }}
+              style={{
+                opacity: isLocked ? 0.45 : 1,
+                cursor: isLocked ? "not-allowed" : "pointer",
+                position: "relative",
+              }}
+              title={isLocked ? "Locked: Run an analysis in Control Center to unlock" : item.label}
+            >
+              <item.icon size={16} />
+              <span>{item.label}</span>
+              {isLocked && (
+                <Lock
+                  size={11}
+                  color="#94a3b8"
+                  style={{ marginLeft: "auto", marginRight: 4 }}
+                />
+              )}
+              {page === item.id && <motion.i layoutId="nav-pill" transition={spring} />}
+            </button>
+          )
+        })}
       </nav>
       <div className="sidebar-status">
         <span className={`pulse ${ingestionStatus?.status === "success" ? "active" : ""}`} />
@@ -414,6 +1295,85 @@ function HomeView({
   const [isTriggering, setIsTriggering] = useState(false)
   const [triggerMessage, setTriggerMessage] = useState<string | null>(null)
 
+  // ── VectorDB Live Monitor state ────────────────────────────────────────────
+  const [vdbData, setVdbData] = useState<VectorDBDocumentsResponse | null>(null)
+  const [vdbLoading, setVdbLoading] = useState(false)
+  const [vdbError, setVdbError] = useState<string | null>(null)
+  const [dedupOpen, setDedupOpen] = useState(false)
+  const [vdbDocFilter, setVdbDocFilter] = useState("")
+
+  // ── Prompt 3: Semantic Vector Search & Activity History State ─────────────
+  const [isSearchingVector, setIsSearchingVector] = useState(false)
+  const [searchRetrievalResult, setSearchRetrievalResult] = useState<SearchRetrievalResponse | null>(null)
+  const [userActivityList, setUserActivityList] = useState<UserActivityItem[]>([])
+  const [showHistoryModal, setShowHistoryModal] = useState(false)
+
+  const loadUserHistory = useCallback(async () => {
+    try {
+      const data = await fetchUserActivityHistory()
+      if (data?.history) {
+        setUserActivityList(data.history)
+      }
+    } catch {
+      // quiet fail
+    }
+  }, [])
+
+  useEffect(() => {
+    loadUserHistory()
+  }, [loadUserHistory])
+
+  const handleVectorSearchOnly = async (q: string) => {
+    const trimmed = q.trim()
+    if (!trimmed) return
+    setIsSearchingVector(true)
+    try {
+      const result = await executeSemanticSearch(trimmed, 4)
+      if (result) {
+        setSearchRetrievalResult(result)
+        if (result.updated_user_history) {
+          setUserActivityList(result.updated_user_history)
+        }
+      }
+    } finally {
+      setIsSearchingVector(false)
+    }
+  }
+
+  const loadVDBData = useCallback(async () => {
+
+    setVdbLoading(true)
+    setVdbError(null)
+    try {
+      const data = await fetchVectorDBDocuments(100)
+      if (data) setVdbData(data)
+      else setVdbError("Backend offline — VectorDB monitor unavailable.")
+    } catch {
+      setVdbError("Failed to fetch VectorDB documents.")
+    } finally {
+      setVdbLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadVDBData()
+    const interval = setInterval(loadVDBData, 30000) // auto-refresh every 30s
+    return () => clearInterval(interval)
+  }, [loadVDBData])
+
+  const filteredVdbDocs = useMemo(() => {
+    if (!vdbData?.documents) return []
+    const q = vdbDocFilter.toLowerCase().trim()
+    if (!q) return vdbData.documents
+    return vdbData.documents.filter(
+      (d) =>
+        d.text_content.toLowerCase().includes(q) ||
+        d.publisher.toLowerCase().includes(q) ||
+        d.source_tier.toLowerCase().includes(q) ||
+        (d.primary_ticker_mentions || []).some((t) => t.toLowerCase().includes(q)),
+    )
+  }, [vdbData, vdbDocFilter])
+
   const handleAnalyze = (q: string) => {
     if (!q.trim()) return
     onQuerySubmit(q.trim())
@@ -509,6 +1469,303 @@ function HomeView({
         </div>
       )}
 
+      {/* ─── VectorDB Live Monitor Panel (inline, always visible) ──────────── */}
+      <div className="vdb-monitor-panel">
+        {/* Header */}
+        <div className="vdb-monitor-header">
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Database size={17} color="#2563eb" />
+            <div>
+              <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
+                VectorDB Live Monitor
+              </h2>
+              <span style={{ fontSize: 11, color: "#64748b" }}>
+                ChromaDB / SQLite knowledge store · auto-refreshes every 30s
+              </span>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {/* Poller status pill */}
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 11,
+                fontWeight: 600,
+                color: vdbData?.background_poller_active ? "#059669" : "#dc2626",
+                background: vdbData?.background_poller_active ? "#ecfdf5" : "#fef2f2",
+                border: `1px solid ${vdbData?.background_poller_active ? "#a7f3d0" : "#fecaca"}`,
+                padding: "3px 10px",
+                borderRadius: 20,
+              }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: vdbData?.background_poller_active ? "#10b981" : "#ef4444",
+                  display: "inline-block",
+                }}
+              />
+              {vdbData
+                ? vdbData.background_poller_active
+                  ? `Poller Active · every ${vdbData.poll_interval_seconds}s`
+                  : "Poller Inactive"
+                : vdbLoading
+                ? "Connecting..."
+                : "Backend Offline"}
+            </span>
+            <button
+              className="vdb-refresh-btn"
+              onClick={loadVDBData}
+              disabled={vdbLoading}
+              title="Refresh VectorDB data"
+            >
+              <RefreshCw size={13} className={vdbLoading ? "spin" : ""} />
+              {vdbLoading ? "Loading..." : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        {/* Stat Cards — always show (zeros if offline) */}
+        <div className="vdb-stat-row">
+          <div className="vdb-stat-card">
+            <span className="vdb-stat-val">{vdbData?.total_documents ?? (vdbLoading ? "…" : "—")}</span>
+            <span className="vdb-stat-label">Chunks Stored</span>
+          </div>
+          <div className="vdb-stat-card blocked">
+            <span className="vdb-stat-val">{vdbData?.duplicates_blocked_count ?? (vdbLoading ? "…" : "—")}</span>
+            <span className="vdb-stat-label">Duplicates Blocked</span>
+          </div>
+          <div className="vdb-stat-card">
+            <span className="vdb-stat-val">
+              {vdbData ? `${(vdbData.semantic_dedup_threshold * 100).toFixed(0)}%` : "—"}
+            </span>
+            <span className="vdb-stat-label">Dedup Threshold</span>
+          </div>
+          <div className="vdb-stat-card">
+            <span className="vdb-stat-val tier1">
+              {vdbData ? vdbData.documents.filter((d) => d.source_tier === "Tier 1").length : "—"}
+            </span>
+            <span className="vdb-stat-label">Tier 1 Sources</span>
+          </div>
+          <div className="vdb-stat-card">
+            <span className="vdb-stat-val tier2">
+              {vdbData ? vdbData.documents.filter((d) => d.source_tier === "Tier 2").length : "—"}
+            </span>
+            <span className="vdb-stat-label">Tier 2 Sources</span>
+          </div>
+          <div className="vdb-stat-card">
+            <span className="vdb-stat-val tier3">
+              {vdbData ? vdbData.documents.filter((d) => d.source_tier === "Tier 3").length : "—"}
+            </span>
+            <span className="vdb-stat-label">Tier 3 Sources</span>
+          </div>
+        </div>
+
+        {/* Offline banner */}
+        {vdbError && (
+          <div className="vdb-error-banner">
+            <ShieldAlert size={14} />
+            {vdbError}
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "#991b1b" }}>
+              Start the backend: <code style={{ background: "#fee2e2", padding: "1px 5px", borderRadius: 4 }}>python -m uvicorn Backend.main:app --port 8000</code>
+            </span>
+          </div>
+        )}
+
+        {/* Loading */}
+        {vdbLoading && !vdbData && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 0", color: "#64748b", fontSize: 13 }}>
+            <Loader2 size={16} className="spin" /> Connecting to ChromaDB knowledge store...
+          </div>
+        )}
+
+        {/* Document Table */}
+        {vdbData && vdbData.documents.length > 0 && (
+          <>
+            <div className="vdb-table-toolbar">
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>
+                {filteredVdbDocs.length} / {vdbData.total_documents} chunks
+              </span>
+              <input
+                type="text"
+                placeholder="Filter by content, publisher, ticker..."
+                value={vdbDocFilter}
+                onChange={(e) => setVdbDocFilter(e.target.value)}
+                className="vdb-filter-input"
+              />
+            </div>
+            <div className="vdb-table-wrap">
+              <table className="vdb-table">
+                <thead>
+                  <tr>
+                    <th>Chunk ID</th>
+                    <th>Content Preview</th>
+                    <th>Publisher</th>
+                    <th>Tier</th>
+                    <th>Trust Score</th>
+                    <th>Tickers</th>
+                    <th>Stored At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredVdbDocs.map((doc: VectorDBDocument) => {
+                    const tierColor =
+                      doc.source_tier === "Tier 1"
+                        ? { bg: "#dcfce7", color: "#15803d", border: "#bbf7d0" }
+                        : doc.source_tier === "Tier 2"
+                        ? { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe" }
+                        : { bg: "#fef3c7", color: "#92400e", border: "#fde68a" }
+                    const trustPct = Math.round((doc.source_trust_score ?? 0) * 100)
+                    const trustColor =
+                      trustPct >= 90 ? "#10b981" : trustPct >= 75 ? "#2563eb" : "#f59e0b"
+                    return (
+                      <tr key={doc.chunk_id} className="vdb-row">
+                        <td>
+                          <code className="vdb-chunk-id" title={doc.chunk_id}>
+                            {doc.chunk_id.length > 12 ? `${doc.chunk_id.slice(0, 12)}…` : doc.chunk_id}
+                          </code>
+                        </td>
+                        <td>
+                          <span className="vdb-content-preview" title={doc.text_content}>
+                            {doc.text_content.length > 90
+                              ? `${doc.text_content.slice(0, 90)}…`
+                              : doc.text_content}
+                          </span>
+                        </td>
+                        <td><span className="vdb-publisher">{doc.publisher}</span></td>
+                        <td>
+                          <span
+                            className="vdb-tier-badge"
+                            style={{
+                              background: tierColor.bg,
+                              color: tierColor.color,
+                              border: `1px solid ${tierColor.border}`,
+                            }}
+                          >
+                            {doc.source_tier}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="vdb-trust-wrap">
+                            <div className="vdb-trust-bar-bg">
+                              <div
+                                className="vdb-trust-bar-fill"
+                                style={{ width: `${trustPct}%`, background: trustColor }}
+                              />
+                            </div>
+                            <span style={{ fontSize: 10.5, color: trustColor, fontWeight: 700 }}>
+                              {trustPct}%
+                            </span>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="vdb-ticker-pills">
+                            {(doc.primary_ticker_mentions || []).length === 0 ? (
+                              <span style={{ color: "#94a3b8", fontSize: 11 }}>—</span>
+                            ) : (
+                              (doc.primary_ticker_mentions || []).slice(0, 4).map((t) => (
+                                <span key={t} className="vdb-ticker-pill">{t}</span>
+                              ))
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <span className="vdb-timestamp">
+                            {doc.created_at
+                              ? new Date(doc.created_at).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "—"}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {vdbData && vdbData.documents.length === 0 && !vdbLoading && (
+          <div className="vdb-empty-state">
+            <Database size={28} color="#94a3b8" />
+            <p>No documents yet. Click <strong>"Trigger Live Ingestion"</strong> to populate the VectorDB.</p>
+          </div>
+        )}
+
+        {/* Dedup Shield Log */}
+        {vdbData && (
+          <div className="vdb-dedup-section">
+            <button className="vdb-dedup-toggle" onClick={() => setDedupOpen((o) => !o)}>
+              <ShieldAlert size={14} color={vdbData.duplicates_blocked_count > 0 ? "#ef4444" : "#64748b"} />
+              <span>
+                Semantic Dedup Shield Log —{" "}
+                <strong style={{ color: vdbData.duplicates_blocked_count > 0 ? "#ef4444" : "#10b981" }}>
+                  {vdbData.duplicates_blocked_count} duplicate{vdbData.duplicates_blocked_count !== 1 ? "s" : ""} blocked
+                </strong>{" "}
+                this session
+              </span>
+              <ChevronDown
+                size={14}
+                style={{
+                  marginLeft: "auto",
+                  transform: dedupOpen ? "rotate(180deg)" : "rotate(0deg)",
+                  transition: "transform 0.2s",
+                }}
+              />
+            </button>
+            {dedupOpen && (
+              <div className="vdb-dedup-log">
+                {(vdbData.dedup_audit?.recent_duplicates_blocked || []).length === 0 ? (
+                  <div className="vdb-dedup-empty">
+                    <ShieldCheck size={16} color="#10b981" />
+                    <span>No duplicates blocked this session. All ingested news is unique.</span>
+                  </div>
+                ) : (
+                  (vdbData.dedup_audit?.recent_duplicates_blocked || []).map(
+                    (dup: BlockedDuplicate, i: number) => (
+                      <div key={i} className="vdb-dedup-item">
+                        <div className="vdb-dedup-item-header">
+                          <span className="vdb-dedup-badge">BLOCKED</span>
+                          <span className="vdb-dedup-score">
+                            Similarity: {(dup.similarity_score * 100).toFixed(1)}%
+                          </span>
+                          <span className="vdb-dedup-time">
+                            {dup.timestamp
+                              ? new Date(dup.timestamp).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                  second: "2-digit",
+                                })
+                              : ""}
+                          </span>
+                        </div>
+                        <div className="vdb-dedup-texts">
+                          <div>
+                            <span className="vdb-dedup-label">Incoming (blocked):</span>
+                            <span className="vdb-dedup-text">{dup.text}</span>
+                          </div>
+                          <div>
+                            <span className="vdb-dedup-label">Matched existing:</span>
+                            <span className="vdb-dedup-text matched">{dup.matched_text}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ),
+                  )
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Query Control Center Card */}
       <section className="query-card">
         <div className="tab-row">
@@ -536,6 +1793,28 @@ function HomeView({
                 onKeyDown={(e) => e.key === "Enter" && handleAnalyze(query)}
                 placeholder="Enter financial headline (e.g. Crude oil surge, Fed rate hike, Tech sanctions)..."
               />
+              <button
+                type="button"
+                onClick={() => handleVectorSearchOnly(query)}
+                disabled={!query.trim() || isSearchingVector}
+                style={{
+                  background: "#f1f5f9",
+                  border: "1px solid #cbd5e1",
+                  color: "#1e293b",
+                  padding: "8px 14px",
+                  borderRadius: 8,
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+                title="Prompt 3: Execute vector nearest-neighbor semantic search & update user history"
+              >
+                <Database size={13} color="#2563eb" />
+                <span>{isSearchingVector ? "Searching..." : "Vector Search"}</span>
+              </button>
               <AppButton onClick={() => handleAnalyze(query)} disabled={!query.trim()}>
                 Analyze Impact <ArrowRight size={14} />
               </AppButton>
@@ -551,7 +1830,160 @@ function HomeView({
                   {text}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(!showHistoryModal)}
+                style={{
+                  marginLeft: "auto",
+                  background: "#eff6ff",
+                  border: "1px solid #bfdbfe",
+                  color: "#1d4ed8",
+                  padding: "2px 8px",
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Activity History ({userActivityList.length})
+              </button>
             </div>
+
+            {/* Prompt 3: Retrieved Vector Context Chunks Box */}
+            {searchRetrievalResult && searchRetrievalResult.retrieved_news.length > 0 && (
+              <div
+                style={{
+                  marginTop: 14,
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 10,
+                  padding: "12px 16px",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>
+                    🎯 Vector Retrieval: Top {searchRetrievalResult.retrieved_news.length} Relevant News Chunks
+                  </span>
+                  <span style={{ fontSize: 11, color: "#64748b" }}>
+                    Query: "{searchRetrievalResult.query_metadata.user_query}"
+                  </span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {searchRetrievalResult.retrieved_news.map((item, i) => (
+                    <div
+                      key={item.chunk_id || i}
+                      style={{
+                        background: "#ffffff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: 8,
+                        padding: "8px 12px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 3,
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#1e293b" }}>{item.headline}</span>
+                        <span
+                          style={{
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                            color: item.similarity_score > 0.4 ? "#059669" : "#2563eb",
+                            background: item.similarity_score > 0.4 ? "#ecfdf5" : "#eff6ff",
+                            padding: "1px 6px",
+                            borderRadius: 10,
+                          }}
+                        >
+                          Sim: {(item.similarity_score * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                      {item.snippet && (
+                        <span style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.4 }}>
+                          {item.snippet.length > 140 ? `${item.snippet.slice(0, 140)}…` : item.snippet}
+                        </span>
+                      )}
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
+                        <span style={{ fontSize: 10.5, color: "#64748b" }}>Source: {item.source}</span>
+                        {item.source_tier && (
+                          <span style={{ fontSize: 10, fontWeight: 600, color: "#4338ca", background: "#e0e7ff", padding: "1px 5px", borderRadius: 4 }}>
+                            {item.source_tier}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleAnalyze(item.headline)}
+                          style={{
+                            marginLeft: "auto",
+                            border: 0,
+                            background: "transparent",
+                            color: "#2563eb",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            padding: 0,
+                          }}
+                        >
+                          Analyze Graph →
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* User Activity History Drawer / List */}
+            {showHistoryModal && (
+              <div
+                style={{
+                  marginTop: 14,
+                  background: "#ffffff",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 10,
+                  padding: "12px 16px",
+                  boxShadow: "0 4px 12px rgba(15,23,42,0.06)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0f172a" }}>
+                    📜 Session User Activity History Log
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowHistoryModal(false)}
+                    style={{ border: 0, background: "transparent", cursor: "pointer", fontSize: 12, color: "#64748b" }}
+                  >
+                    Close ✕
+                  </button>
+                </div>
+                <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                  {userActivityList.map((act) => (
+                    <div
+                      key={act.activity_id}
+                      style={{
+                        padding: "6px 10px",
+                        background: "#f8fafc",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: 6,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        fontSize: 11.5,
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, color: "#1e293b" }}>{act.query_text}</span>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <span style={{ color: "#059669", fontWeight: 700, fontSize: 10.5 }}>{act.status}</span>
+                        <span style={{ color: "#94a3b8", fontSize: 10.5 }}>
+                          {new Date(act.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
           </>
         ) : (
           <div className="scenario-grid">
@@ -2271,6 +3703,11 @@ export default function App() {
   const [graphLoading, setGraphLoading] = useState(false)
   const [graphError, setGraphError] = useState<string | null>(null)
 
+  // Prompt 4: 6-Stage Transformation Pipeline State
+  const [hasAnalyzed, setHasAnalyzed] = useState(false)
+  const [pipelineModalVisible, setPipelineModalVisible] = useState(false)
+  const [currentPipelineStage, setCurrentPipelineStage] = useState(0)
+
   // Cross-page navigation state
   const [selectedTicker, setSelectedTicker] = useState<string>("SPY")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
@@ -2287,97 +3724,137 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" })
   }, [])
 
-  /** Called when user submits a query */
+  /** Called when user submits a query — runs sequential 6-stage transformation pipeline */
   const handleQuerySubmit = useCallback(async (query: string) => {
     setActiveQuery(query)
     setGraphLoading(true)
     setGraphError(null)
+    setPipelineModalVisible(true)
+    setCurrentPipelineStage(0)
+
     try {
-      const result = await analyzeEvent(query)
+      // Stage 1: Extracting relevant news from Vector DB
+      setCurrentPipelineStage(0)
+      await new Promise((r) => setTimeout(r, 650))
+
+      // Stage 2: Applying NLP & Extracting Entities
+      setCurrentPipelineStage(1)
+      await new Promise((r) => setTimeout(r, 650))
+
+      // Stage 3: Identifying Affected Sectors
+      setCurrentPipelineStage(2)
+      await new Promise((r) => setTimeout(r, 650))
+
+      // Stage 4: Calculating Scores & Validating Evidences
+      setCurrentPipelineStage(3)
+      // Concurrently kick off the actual backend analysis
+      const analysisPromise = analyzeEvent(query)
+      await new Promise((r) => setTimeout(r, 650))
+
+      // Stage 5: Creating Knowledge Graph
+      setCurrentPipelineStage(4)
+      await new Promise((r) => setTimeout(r, 650))
+
+      // Stage 6: Generating Propagation Path
+      setCurrentPipelineStage(5)
+      const result = await analysisPromise
+      await new Promise((r) => setTimeout(r, 550))
+
       setGraphData(result)
+      setHasAnalyzed(true)
       if (result.root_event?.ticker) {
         setSelectedTicker(result.root_event.ticker)
       } else if (result.affected_assets?.[0]?.ticker) {
         setSelectedTicker(result.affected_assets[0].ticker)
       }
+
+      // Close modal and navigate smoothly to graph
+      setPipelineModalVisible(false)
+      navigate("graph")
     } catch (err) {
       setGraphError(err instanceof Error ? err.message : "Analysis failed")
+      setPipelineModalVisible(false)
     } finally {
       setGraphLoading(false)
     }
-  }, [])
+  }, [navigate])
 
-  const [hasInitialized, setHasInitialized] = useState(false)
+  return (
+    <>
+      {pipelineModalVisible && (
+        <PipelineProgressModal
+          currentStage={currentPipelineStage}
+          query={activeQuery}
+        />
+      )}
 
-  // Pre-load analysis on mount
-  useEffect(() => {
-    if (!hasInitialized) {
-      setHasInitialized(true)
-      const queryToRun = activeQuery || "Crude oil prices rise 12% after OPEC supply cut announcement"
-      handleQuerySubmit(queryToRun)
-    }
-  }, [hasInitialized, activeQuery, handleQuerySubmit])
-
-  return page === "landing" ? (
-    <Landing navigate={navigate} />
-  ) : (
-    <main className="app-shell">
-      <Sidebar page={page} navigate={navigate} ingestionStatus={ingestionStatus} />
-      <div className="main-column">
-        <ShellHeader page={page} />
-        <AnimatePresence mode="wait">
-          <div key={page}>
-            {page === "home" && (
-              <HomeView
-                navigate={navigate}
-                onQuerySubmit={handleQuerySubmit}
-                ingestionStatus={ingestionStatus}
-                onRefreshIngestion={async () => {
-                  await refreshIngestionStatus()
-                }}
-              />
-            )}
-            {page === "graph" && (
-              <GraphView
-                navigate={navigate}
-                graphData={graphData}
-                loading={graphLoading}
-                error={graphError}
-                query={activeQuery}
-                onSelectTickerForTimeSeries={(t) => setSelectedTicker(t)}
-                onSelectEvidenceForInspector={(evId) => setSelectedEvidenceId(evId || null)}
-              />
-            )}
-            {page === "path" && (
-              <PathView
-                graphData={graphData}
-                loading={graphLoading}
-                error={graphError}
-                navigate={navigate}
-                onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
-                onSelectTicker={(t) => setSelectedTicker(t)}
-              />
-            )}
-            {page === "timeseries" && (
-              <TimeSeriesView
-                graphData={graphData}
-                graphLoading={graphLoading}
-                selectedTickerProp={selectedTicker}
-                onSelectTicker={(t) => setSelectedTicker(t)}
-              />
-            )}
-            {page === "evidence" && (
-              <EvidenceView
-                graphData={graphData}
-                loading={graphLoading}
-                error={graphError}
-                navigate={navigate}
-                selectedEvidenceIdProp={selectedEvidenceId || undefined}
-              />
-            )}
+      {page === "landing" ? (
+        <Landing navigate={navigate} hasAnalyzed={hasAnalyzed} />
+      ) : (
+        <main className="app-shell">
+          <Sidebar
+            page={page}
+            navigate={navigate}
+            ingestionStatus={ingestionStatus}
+            hasAnalyzed={hasAnalyzed}
+          />
+          <div className="main-column">
+            <ShellHeader page={page} />
+            <AnimatePresence mode="wait">
+              <div key={page}>
+                {page === "home" && (
+                  <HomeView
+                    navigate={navigate}
+                    onQuerySubmit={handleQuerySubmit}
+                    ingestionStatus={ingestionStatus}
+                    onRefreshIngestion={async () => {
+                      await refreshIngestionStatus()
+                    }}
+                  />
+                )}
+                {page === "graph" && (
+                  <GraphView
+                    navigate={navigate}
+                    graphData={graphData}
+                    loading={graphLoading}
+                    error={graphError}
+                    query={activeQuery}
+                    onSelectTickerForTimeSeries={(t) => setSelectedTicker(t)}
+                    onSelectEvidenceForInspector={(evId) => setSelectedEvidenceId(evId || null)}
+                  />
+                )}
+                {page === "path" && (
+                  <PathView
+                    graphData={graphData}
+                    loading={graphLoading}
+                    error={graphError}
+                    navigate={navigate}
+                    onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
+                    onSelectTicker={(t) => setSelectedTicker(t)}
+                  />
+                )}
+                {page === "timeseries" && (
+                  <TimeSeriesView
+                    graphData={graphData}
+                    graphLoading={graphLoading}
+                    selectedTickerProp={selectedTicker}
+                    onSelectTicker={(t) => setSelectedTicker(t)}
+                  />
+                )}
+                {page === "evidence" && (
+                  <EvidenceView
+                    graphData={graphData}
+                    loading={graphLoading}
+                    error={graphError}
+                    navigate={navigate}
+                    selectedEvidenceIdProp={selectedEvidenceId || undefined}
+                  />
+                )}
+              </div>
+            </AnimatePresence>
           </div>
-        </AnimatePresence>
-      </div>
-    </main>
+        </main>
+      )}
+    </>
   )
 }

@@ -20,6 +20,7 @@ Reference:
 """
 
 import os
+import re
 import sys
 import time
 import hashlib
@@ -28,7 +29,7 @@ import threading
 import urllib.request
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Configure module-level logging
 logger = logging.getLogger("ingestion")
@@ -392,6 +393,193 @@ def fetch_structured_articles(
     return articles
 
 
+# ============================================================================
+# Institutional Whitelist Verification & Semantic Chunking Engine
+# ============================================================================
+
+INSTITUTIONAL_SOURCE_WHITELIST: Dict[str, Dict[str, Any]] = {
+    # Tier 1: SEC EDGAR, Federal Reserve (FRED), Regulatory Filings
+    "Tier 1": {
+        "keywords": [
+            "sec", "edgar", "federal reserve", "fred", "cftc", "fdic",
+            "bank of england", "ecb", "10-k", "10-q", "8-k", "regulatory filing"
+        ],
+        "trust_score": 0.98,
+        "publisher_type": "Regulatory & Central Bank"
+    },
+    # Tier 2: Bloomberg, Reuters, Financial Times, Wall Street Journal
+    "Tier 2": {
+        "keywords": [
+            "bloomberg", "reuters", "financial times", "ft.com",
+            "wall street journal", "wsj", "dow jones", "barron's"
+        ],
+        "trust_score": 0.90,
+        "publisher_type": "Tier 1 Institutional Media"
+    },
+    # Tier 3: Maritime Intelligence (Lloyd's List), Industry Publications
+    "Tier 3": {
+        "keywords": [
+            "lloyd's list", "lloyds list", "maritime intelligence", "cnbc",
+            "investing.com", "marketwatch", "spglobal", "platts",
+            "freightwaves", "argus", "oilprice", "industry publication"
+        ],
+        "trust_score": 0.78,
+        "publisher_type": "Specialized Financial Wire"
+    }
+}
+
+
+def evaluate_source_trust(publisher: str, url_or_ref: str = "") -> Tuple[str, float, str]:
+    """
+    Validates source trustworthiness against institutional whitelist.
+    Returns: (source_tier, source_trust_score, publisher_type)
+    """
+    combined = f"{publisher} {url_or_ref}".lower().strip()
+
+    # Check Tier 1
+    for kw in INSTITUTIONAL_SOURCE_WHITELIST["Tier 1"]["keywords"]:
+        if kw in combined:
+            return "Tier 1", INSTITUTIONAL_SOURCE_WHITELIST["Tier 1"]["trust_score"], INSTITUTIONAL_SOURCE_WHITELIST["Tier 1"]["publisher_type"]
+
+    # Check Tier 2
+    for kw in INSTITUTIONAL_SOURCE_WHITELIST["Tier 2"]["keywords"]:
+        if kw in combined:
+            return "Tier 2", INSTITUTIONAL_SOURCE_WHITELIST["Tier 2"]["trust_score"], INSTITUTIONAL_SOURCE_WHITELIST["Tier 2"]["publisher_type"]
+
+    # Check Tier 3
+    for kw in INSTITUTIONAL_SOURCE_WHITELIST["Tier 3"]["keywords"]:
+        if kw in combined:
+            return "Tier 3", INSTITUTIONAL_SOURCE_WHITELIST["Tier 3"]["trust_score"], INSTITUTIONAL_SOURCE_WHITELIST["Tier 3"]["publisher_type"]
+
+    # Unlisted / Syndicated Press Fallback
+    return "Tier 3", 0.65, "Syndicated Wire"
+
+
+def extract_primary_ticker_mentions(text: str) -> List[str]:
+    """
+    Extracts primary asset and stock ticker mentions:
+    e.g. $XOM, $DAL, CL=F, SPY, TSLA, etc.
+    """
+    tickers: Set[str] = set()
+
+    # 1. Explicit cash tags e.g. $AAPL, $XOM, $DAL
+    cashtags = re.findall(r"\$([A-Z]{1,5})\b", text)
+    tickers.update(cashtags)
+
+    # 2. Benchmark commodities, rates and index codes
+    commodities = re.findall(
+        r"\b(CL=F|BZ=F|GC=F|SI=F|NG=F|HG=F|UGA|\^GSPC|\^IXIC|\^DJI|SPY|QQQ|IWM|TLT|HYG|VIX)\b",
+        text
+    )
+    tickers.update(commodities)
+
+    # 3. Known liquid US large-cap equities
+    liquid_equities = re.findall(
+        r"\b(AAPL|MSFT|NVDA|AMZN|GOOGL|TSLA|META|XOM|CVX|DAL|UAL|LUV|FDX|UPS|DOW|BA|CAT|JPM|WFC|BAC|DIS|PFE|UNH|XLE|JETS|XLB|IYT)\b",
+        text
+    )
+    tickers.update(liquid_equities)
+
+    return sorted(list(tickers))
+
+
+def chunk_text_into_semantic_blocks(text: str, max_tokens: int = 512, overlap_tokens: int = 50) -> List[str]:
+    """
+    Chunks text into 512-token semantic blocks with overlapping boundaries (50 tokens).
+    Approximation: 1 token ≈ 4 characters. Cuts cleanly on sentence boundaries.
+    """
+    clean_text = text.strip()
+    if not clean_text:
+        return []
+
+    chars_per_token = 4
+    max_chars = max_tokens * chars_per_token  # ~2048 chars
+    overlap_chars = overlap_tokens * chars_per_token  # ~200 chars
+
+    if len(clean_text) <= max_chars:
+        return [clean_text]
+
+    # Split text into sentences
+    sentences = re.split(r"(?<=[.!?\n])\s+", clean_text)
+    chunks: List[str] = []
+    current_chunk: List[str] = []
+    current_len = 0
+
+    for sentence in sentences:
+        s_len = len(sentence)
+        if current_len + s_len > max_chars and current_chunk:
+            chunk_str = " ".join(current_chunk)
+            chunks.append(chunk_str)
+
+            # Retain overlap sentences from tail
+            overlap_chunk: List[str] = []
+            overlap_accum = 0
+            for prev_s in reversed(current_chunk):
+                if overlap_accum + len(prev_s) <= overlap_chars:
+                    overlap_chunk.insert(0, prev_s)
+                    overlap_accum += len(prev_s)
+                else:
+                    break
+            current_chunk = overlap_chunk
+            current_len = sum(len(s) for s in current_chunk)
+
+        current_chunk.append(sentence)
+        current_len += s_len
+
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
+
+    return chunks
+
+
+def process_and_verify_raw_articles(raw_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Ingests incoming raw news metadata (Title, Content, Publisher, Timestamp, URL).
+    Validates source trustworthiness against institutional whitelist (Tier 1-3).
+    Chunks into 512-token semantic blocks with overlapping boundaries.
+    Outputs structured JSON ready for ChromaDB vector insertion matching exact schema.
+    """
+    timestamp = datetime.now(timezone.utc).isoformat()
+    verified_chunks: List[Dict[str, Any]] = []
+
+    for art in raw_articles:
+        title = str(art.get("title") or art.get("Title") or "").strip()
+        content = str(art.get("content") or art.get("Content") or art.get("summary") or "").strip()
+        publisher = str(art.get("publisher") or art.get("Publisher") or art.get("source") or "Financial News Wire").strip()
+        pub_time = str(art.get("published_at") or art.get("Timestamp") or art.get("published") or timestamp).strip()
+        url = str(art.get("url") or art.get("URL") or art.get("link") or "").strip()
+
+        full_text = f"{title}. {content}" if title and content else (title or content)
+        if not full_text:
+            continue
+
+        source_tier, trust_score, pub_type = evaluate_source_trust(publisher, url)
+        semantic_blocks = chunk_text_into_semantic_blocks(full_text, max_tokens=512, overlap_tokens=50)
+
+        for idx, block in enumerate(semantic_blocks):
+            chunk_hash_input = f"{publisher}:{url}:{idx}:{block[:64]}"
+            chunk_id = f"chk-{hashlib.sha256(chunk_hash_input.encode('utf-8')).hexdigest()[:12]}"
+            tickers = extract_primary_ticker_mentions(block)
+
+            verified_chunks.append({
+                "chunk_id": chunk_id,
+                "text_content": block,
+                "publisher": publisher,
+                "source_tier": source_tier,
+                "source_trust_score": trust_score,
+                "metadata": {
+                    "url_or_ref": url or f"wire://{publisher.lower().replace(' ', '-')}",
+                    "published_at": pub_time,
+                    "primary_ticker_mentions": tickers,
+                }
+            })
+
+    return {
+        "ingestion_timestamp": timestamp,
+        "verified_chunks": verified_chunks,
+    }
+
+
 def poll_and_store_news(
     vector_db_instance: Any = None,
     query: str = "financial market news supply chain commodities",
@@ -435,20 +623,18 @@ def poll_and_store_news(
             chunks.extend(tavily_results)
             source_used = "tavily"
 
-        # 2. If Tavily yielded fewer than target_limit, supplement with live RSS
-        if len(chunks) < target_limit:
-            remaining = target_limit - len(chunks)
-            rss_results = fetch_news_from_rss(
-                feed_urls=feed_urls,
-                max_items=remaining,
-                stop_event=stop_event
-            )
-            if rss_results and len(rss_results) > 0:
-                chunks.extend(rss_results)
-                source_used = "mixed" if source_used == "tavily" else "rss"
+        # 2. If Tavily yielded fewer than target_limit, supplement with live structured RSS
+        structured_articles = fetch_structured_articles(
+            feed_urls=feed_urls,
+            max_items=target_limit,
+            stop_event=stop_event
+        )
+
+        verified_data = process_and_verify_raw_articles(structured_articles)
+        verified_chunks = verified_data.get("verified_chunks", [])
 
         # If zero real articles could be fetched (e.g. offline, rate limit, all feeds unreachable)
-        if not chunks:
+        if not verified_chunks and not chunks:
             error_msg = "No live news articles could be retrieved from configured sources (Tavily/RSS)."
             logger.warning(error_msg)
             return _build_response_dict({
@@ -461,15 +647,19 @@ def poll_and_store_news(
                 "warning": None,
             })
 
-        # 3. Push real chunks to Vector DB
+        source_used = "rss" if structured_articles else ("tavily" if chunks else "none")
+
+        # 3. Push verified semantic chunks with whitelist metadata to Vector DB
         chunks_added = 0
         target_vdb = vector_db_instance if vector_db_instance is not None else _get_vector_db_module()
 
         if target_vdb is not None and hasattr(target_vdb, "add_documents") and callable(target_vdb.add_documents):
             try:
-                target_vdb.add_documents(chunks)
-                chunks_added = len(chunks)
-                logger.info(f"Pushed {chunks_added} live chunks to Vector Database.")
+                if verified_chunks:
+                    chunks_added = target_vdb.add_documents(verified_chunks)
+                elif chunks:
+                    chunks_added = target_vdb.add_documents(chunks)
+                logger.info(f"Pushed {chunks_added} verified live chunks to Vector Database.")
             except Exception as vdb_exc:
                 error_msg = f"Vector database storage error: {vdb_exc}"
                 logger.error(error_msg)

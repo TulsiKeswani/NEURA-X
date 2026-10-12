@@ -84,6 +84,60 @@ function getFinancialAlertTag(node: GraphNode): string {
   if (lbl.includes("market") || id.includes("market") || lbl.includes("spy")) {
     return "! MARKET CONTAGION"
   }
+  // ── New nodes ──────────────────────────────────────────────────────────────
+  if (id.includes("shipping") || lbl.includes("shipping")) {
+    return "! FREIGHT SURGE"
+  }
+  if (id.includes("petrochem") || id.includes("feedstock") || lbl.includes("petrochem")) {
+    return "! FEEDSTOCK SHOCK"
+  }
+  if (id.includes("utilities-sector") || (lbl.includes("utilities") && lbl.includes("sector"))) {
+    return "! POWER COST RISE"
+  }
+  if (id.includes("plastics") || id.includes("synthetic") || lbl.includes("plastics")) {
+    return "! INPUT COST SURGE"
+  }
+  if (id.includes("freight") || id.includes("logistics") || lbl.includes("logistics")) {
+    return "! MARGIN PRESSURE"
+  }
+  if (id.includes("agri") || id.includes("fertil") || lbl.includes("fertilizer")) {
+    return "! AGRI COST SPIKE"
+  }
+  if (id.includes("automotive") || (lbl.includes("auto") && lbl.includes("sector"))) {
+    return "! EV COST IMPACT"
+  }
+  if (id.includes("consumer-staples") || lbl.includes("consumer staples")) {
+    return "! CONSUMER SQUEEZE"
+  }
+  if (id.includes("retail") || lbl.includes("retail")) {
+    return "! RETAIL DRAG"
+  }
+  if (id.includes("exxon") || lbl.includes("exxon")) {
+    return "! OIL WINDFALL"
+  }
+  if (id.includes("chevron") || lbl.includes("chevron")) {
+    return "! OIL WINDFALL"
+  }
+  if (id.includes("united-airline") || lbl.includes("united airline")) {
+    return "! FUEL MARGIN RISK"
+  }
+  if (id.includes("ups") || lbl.includes("ups logistics")) {
+    return "! SHIPPING COST UP"
+  }
+  if (id.includes("tesla") || lbl.includes("tesla")) {
+    return "! INPUT COST RISK"
+  }
+  if ((id.includes("dow") && id.includes("chem")) || lbl.includes("dow chemical")) {
+    return "! FEEDSTOCK HIT"
+  }
+  // ── Hop-5 news nodes ────────────────────────────────────────────────────────
+  if (node.hop === 5 || id.includes("news-")) {
+    return "! NEWS EVIDENCE"
+  }
+  // ── Hop-6 industry sector leaves ────────────────────────────────────────────
+  if (node.hop === 6 || id.includes("sector-")) {
+    return "! SECTOR EXPOSED"
+  }
 
   if (node.hop === 1) return "! SECTOR EXPOSURE"
   if (node.hop === 2) return "! INFLATION SPIKE"
@@ -124,6 +178,69 @@ function getFinancialCoreColor(node: GraphNode): string {
   }
   if (lbl.includes("market") || id.includes("market") || lbl.includes("spy")) {
     return "#dc2626" // Crimson Red for Market Indices
+  }
+  // ── New node colors ─────────────────────────────────────────────────────────
+  if (id.includes("shipping") || lbl.includes("shipping")) {
+    return "#0891b2" // Teal for Shipping Sector
+  }
+  if (id.includes("petrochem") || id.includes("feedstock") || lbl.includes("petrochem")) {
+    return "#ea580c" // Orange for Petrochemicals
+  }
+  if (id.includes("utilities-sector") || (lbl.includes("utilities") && lbl.includes("sector"))) {
+    return "#0d9488" // Teal-green for Utilities
+  }
+  if (id.includes("plastics") || id.includes("synthetic") || lbl.includes("plastics")) {
+    return "#7c3aed" // Violet for Plastics & Synthetics
+  }
+  if (id.includes("freight") || id.includes("logistics") || lbl.includes("logistics")) {
+    return "#d97706" // Amber for Freight & Logistics
+  }
+  if (id.includes("agri") || id.includes("fertil") || lbl.includes("fertilizer")) {
+    return "#16a34a" // Green for Agriculture / Fertilizer
+  }
+  if (id.includes("automotive") || (lbl.includes("auto") && lbl.includes("sector"))) {
+    return "#6d28d9" // Deep violet for Automotive
+  }
+  if (id.includes("consumer-staples") || lbl.includes("consumer staples")) {
+    return "#db2777" // Pink for Consumer Staples
+  }
+  if (id.includes("retail") || lbl.includes("retail")) {
+    return "#be185d" // Rose for Retail Goods
+  }
+  if (id.includes("exxon") || id.includes("chevron") || lbl.includes("exxon") || lbl.includes("chevron")) {
+    return "#0284c7" // Sky Blue for Oil Majors
+  }
+  if (id.includes("united-airline") || lbl.includes("united airline")) {
+    return "#eab308" // Yellow for Airlines
+  }
+  if (id.includes("ups") || lbl.includes("ups logistics")) {
+    return "#d97706" // Amber for UPS
+  }
+  if (id.includes("tesla") || lbl.includes("tesla")) {
+    return "#dc2626" // Red for Tesla
+  }
+  if ((id.includes("dow") && id.includes("chem")) || lbl.includes("dow chemical")) {
+    return "#ea580c" // Orange for Dow Chemical
+  }
+  // ── Hop-5: News article nodes ───────────────────────────────────────────────
+  if (node.hop === 5 || id.includes("news-")) {
+    return "#4f46e5" // Indigo — visually distinct from all sector/equity nodes
+  }
+  // ── Hop-6: Industry sector leaf nodes — 12-domain color palette ────────────
+  if (node.hop === 6 || id.includes("sector-")) {
+    if (lbl.includes("energy") || lbl.includes("petroleum")) return "#f97316"
+    if (lbl.includes("financial") || lbl.includes("banking")) return "#3b82f6"
+    if (lbl.includes("technology") || lbl.includes("ai")) return "#8b5cf6"
+    if (lbl.includes("healthcare") || lbl.includes("pharma")) return "#10b981"
+    if (lbl.includes("consumer") || lbl.includes("retail")) return "#f43f5e"
+    if (lbl.includes("industrial") || lbl.includes("logistics")) return "#64748b"
+    if (lbl.includes("material") || lbl.includes("mining")) return "#a16207"
+    if (lbl.includes("utilit") || lbl.includes("power")) return "#06b6d4"
+    if (lbl.includes("real estate")) return "#ec4899"
+    if (lbl.includes("media") || lbl.includes("telecom")) return "#6366f1"
+    if (lbl.includes("agriculture") || lbl.includes("food")) return "#22c55e"
+    if (lbl.includes("automotive") || lbl.includes("ev")) return "#ef4444"
+    return "#14b8a6" // teal fallback
   }
 
   return "#0284c7"
@@ -193,9 +310,9 @@ export function NetworkGraph({
   onToggleExpand,
   externalExpandTrigger,
 }: NetworkGraphProps) {
-  // Canvas coordinate bounds
+  // Canvas coordinate bounds — extended to accommodate hop-5 news + hop-6 sector leaves
   const canvasWidth = 1400
-  const canvasHeight = 850
+  const canvasHeight = 1100
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Zoom & Pan matching reference screenshots (starts 100% for crisp prominent focus)
@@ -214,21 +331,21 @@ export function NetworkGraph({
   }, [nodes])
 
   // ─── 2. PROGRESSIVE EXPANSION STATE ───────────────────────────────────────
-  // Initial state has ONLY the root shock node visible matching Screenshot 1!
+  // Prompt 5: Initialize with all 4 hop levels present so multi-sector impact is immediately visible!
   const [visibleNodeIds, setVisibleNodeIds] = useState<Set<string>>(() => {
-    return rootNode ? new Set([rootNode.id]) : new Set()
+    return new Set(nodes.map((n) => n.id))
   })
 
-  // Reset to root on new query dataset
+  // On query dataset update, show full multi-sector 4-hop constellation
   const prevRootIdRef = useRef<string | null>(null)
   useEffect(() => {
     if (rootNode && rootNode.id !== prevRootIdRef.current) {
       prevRootIdRef.current = rootNode.id
-      setVisibleNodeIds(new Set([rootNode.id]))
-      setZoom(0.71)
+      setVisibleNodeIds(new Set(nodes.map((n) => n.id)))
+      setZoom(0.58) // Fits 7-hop layout: hop 0 (y=70) through hop 6 (y=1010) on 1100px canvas
       setPan({ x: 0, y: 0 })
     }
-  }, [rootNode])
+  }, [rootNode, nodes])
 
   // Reset inspector dismissed on node selection change
   useEffect(() => {
@@ -333,97 +450,45 @@ export function NetworkGraph({
     const posMap = new Map<string, { x: number; y: number }>()
     if (currentVisibleNodes.length === 0) return posMap
 
-    const centerX = canvasWidth / 2
-    const centerY = canvasHeight / 2
-
-    // Root is pinned at center
-    if (rootNode) {
-      posMap.set(rootNode.id, { x: centerX, y: centerY })
+    // ── Hierarchical layout: each hop level occupies a horizontal row ──────────
+    // Canvas: 1400 × 1100.
+    // Hop 0 (root) → top. Hop 6 (industry sector leaves) → bottom.
+    const HOP_Y: Record<number, number> = {
+      0: 70,
+      1: 215,
+      2: 375,
+      3: 530,
+      4: 685,
+      5: 855,   // Retrieved news article nodes
+      6: 1010,  // Industry sector leaf nodes
     }
+    const SIDE_MARGIN = 80 // px — slightly tighter to spread many hop-6 nodes
 
-    if (currentVisibleNodes.length === 1) {
-      return posMap
-    }
-
-    // Exact radial/starburst geometry mapping the financial impact chain
+    // Group nodes by hop level
+    const hopGroups = new Map<number, typeof currentVisibleNodes>()
     currentVisibleNodes.forEach((node) => {
-      if (node.id === rootNode?.id) return
+      const hop = node.hop ?? 0
+      if (!hopGroups.has(hop)) hopGroups.set(hop, [])
+      hopGroups.get(hop)!.push(node)
+    })
 
-      const id = node.id.toLowerCase()
-      const lbl = node.label.toLowerCase()
+    // Place each group evenly across the canvas width
+    hopGroups.forEach((nodesAtHop, hop) => {
+      const y = HOP_Y[hop] ?? (80 + hop * 155)
+      const count = nodesAtHop.length
+      const usableWidth = canvasWidth - SIDE_MARGIN * 2
 
-      // Hop 1: Crude Oil Benchmark (Upper-Left)
-      if (id.includes("crude") || lbl.includes("crude")) {
-        posMap.set(node.id, { x: centerX - 200, y: centerY - 150 })
-      }
-      // Hop 1: Energy Sector XLE (Upper-Right)
-      else if (id.includes("energy-sector") || (lbl.includes("energy") && !lbl.includes("input"))) {
-        posMap.set(node.id, { x: centerX + 200, y: centerY - 150 })
-      }
-      // Hop 2: Inflation Expectations CPI (Mid-Left)
-      else if (id.includes("inflation") || lbl.includes("inflation") || lbl.includes("cpi")) {
-        posMap.set(node.id, { x: centerX - 380, y: centerY - 30 })
-      }
-      // Hop 2: Fuel & Transportation Costs (Top-Right)
-      else if (id.includes("fuel") || lbl.includes("fuel")) {
-        posMap.set(node.id, { x: centerX + 340, y: centerY - 250 })
-      }
-      // Hop 2: Industrial Energy Input Costs (Lower-Left)
-      else if (id.includes("energy-input") || lbl.includes("energy input")) {
-        posMap.set(node.id, { x: centerX - 320, y: centerY + 180 })
-      }
-      // Hop 3: Interest-Rate Expectations (Upper-Far-Left)
-      else if (id.includes("interest-rate") || (lbl.includes("rate") && !lbl.includes("mortgage") && !lbl.includes("cap"))) {
-        posMap.set(node.id, { x: centerX - 420, y: centerY - 180 })
-      }
-      // Hop 3: Bank Funding & Lending Conditions (Bottom-Left)
-      else if (id.includes("bank-funding") || lbl.includes("funding")) {
-        posMap.set(node.id, { x: centerX - 140, y: centerY + 240 })
-      }
-      // Hop 3: Borrowing Costs & Mortgage Rates (Bottom-Right)
-      else if (id.includes("borrowing") || lbl.includes("borrowing")) {
-        posMap.set(node.id, { x: centerX + 140, y: centerY + 240 })
-      }
-      // Hop 3: Airlines & Logistics DAL (Far-Right)
-      else if (id.includes("airline") || lbl.includes("airline") || lbl.includes("dal")) {
-        posMap.set(node.id, { x: centerX + 520, y: centerY - 150 })
-      }
-      // Hop 3: Manufacturing Sector XLI (Far-Lower-Left)
-      else if (id.includes("manufacturing") || lbl.includes("manufacturing") || lbl.includes("xli")) {
-        posMap.set(node.id, { x: centerX - 480, y: centerY + 260 })
-      }
-      // Hop 4: U.S. 10Y Treasury Yield TNX (Far-Top-Left)
-      else if (id.includes("bond") || id.includes("tnx") || lbl.includes("treasury") || lbl.includes("yield")) {
-        posMap.set(node.id, { x: centerX - 560, y: centerY - 180 })
-      }
-      // Hop 4: Banking Sector XLF (Deep Bottom-Left)
-      else if (id.includes("banking-sector") || (lbl.includes("bank") && lbl.includes("sector")) || lbl.includes("xlf")) {
-        posMap.set(node.id, { x: centerX - 180, y: centerY + 340 })
-      }
-      // Hop 4: Real Estate Sector XLRE (Deep Bottom-Right)
-      else if (id.includes("real-estate") || lbl.includes("real estate") || lbl.includes("xlre")) {
-        posMap.set(node.id, { x: centerX + 180, y: centerY + 340 })
-      }
-      // Hop 4: S&P 500 Market Index SPY (Far-Mid-Right)
-      else if (id.includes("market") || lbl.includes("market") || lbl.includes("spy")) {
-        posMap.set(node.id, { x: centerX + 460, y: centerY + 100 })
-      }
-      // Fallback radial positioning
-      else {
-        const satellites = currentVisibleNodes.filter((n) => n.id !== rootNode?.id)
-        const idx = satellites.indexOf(node)
-        const total = Math.max(1, satellites.length)
-        const angle = (idx / total) * 2 * Math.PI - Math.PI / 2
-        const radius = 260 + (node.hop > 1 ? 120 : 0)
-        posMap.set(node.id, {
-          x: centerX + radius * Math.cos(angle),
-          y: centerY + radius * Math.sin(angle),
-        })
-      }
+      nodesAtHop.forEach((node, idx) => {
+        const x =
+          count === 1
+            ? canvasWidth / 2
+            : SIDE_MARGIN + (idx / (count - 1)) * usableWidth
+        posMap.set(node.id, { x, y })
+      })
     })
 
     return posMap
-  }, [currentVisibleNodes, rootNode, canvasWidth, canvasHeight])
+  }, [currentVisibleNodes, canvasWidth, canvasHeight])
 
   // ─── 5. EDGES WITH EXACT COLORS & LABELS ──────────────────────────────────
   const visualLinks = useMemo(() => {
@@ -710,6 +775,14 @@ export function NetworkGraph({
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#dc2626", border: "1.5px solid #0f172a" }} />
               <span>Broad Market Benchmark Drag (Hop 4)</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#4f46e5", border: "1.5px solid #0f172a" }} />
+              <span>Retrieved News Evidence (Hop 5)</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 12, height: 12, borderRadius: "50%", background: "#10b981", border: "1.5px solid #0f172a" }} />
+              <span>Industry Sector Leaves (Hop 6)</span>
             </div>
           </div>
         )}
@@ -1097,6 +1170,7 @@ export function NetworkGraph({
                   </g>
 
                   {/* ── D. Label Card Below Circle (Zero Collision, Multi-line Support) ── */}
+                  {/* ── D. Label Card Below Circle (Zero Collision, Multi-line Support + Impact Score & Direction) ── */}
                   <g transform={`translate(0, ${cardY})`}>
                     <rect
                       x={-cardWidth / 2}
@@ -1132,6 +1206,33 @@ export function NetworkGraph({
                       >
                         {formattedLabel.line1}
                       </text>
+                    )}
+
+                    {/* Impact Score & Directional Sentiment Badge (Prompt 5) */}
+                    {!isRoot && (
+                      <g transform={`translate(${cardWidth / 2 - 2}, ${-cardHeight / 2})`}>
+                        <rect
+                          x="-14"
+                          y="-8"
+                          width="28"
+                          height="16"
+                          rx="4"
+                          fill={node.sentiment === "positive" ? "#16a34a" : "#dc2626"}
+                          stroke="#ffffff"
+                          strokeWidth="1.2"
+                        />
+                        <text
+                          x="0"
+                          y="3.5"
+                          textAnchor="middle"
+                          fontSize="8"
+                          fontWeight="800"
+                          fill="#ffffff"
+                        >
+                          {node.sentiment === "positive" ? "+" : "-"}
+                          {Math.round(node.impact_score * 100)}%
+                        </text>
+                      </g>
                     )}
                   </g>
                 </g>

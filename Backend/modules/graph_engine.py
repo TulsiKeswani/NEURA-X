@@ -68,8 +68,8 @@ if PYDANTIC_AVAILABLE:
         model_config = ConfigDict(extra="ignore")
         id: str = Field(description="Unique node identifier")
         label: str = Field(description="Display label of the node")
-        category: str = Field(default="Entity", description="Node category (Root Event, Commodity, Sector, Asset, Market)")
-        hop_level: int = Field(default=0, ge=0, le=4, description="Deterministic propagation hop distance (0 to 4)")
+        category: str = Field(default="Entity", description="Node category (Root Event, Commodity, Sector, Asset, Market, News Source, Industry Sector)")
+        hop_level: int = Field(default=0, ge=0, le=6, description="Deterministic propagation hop distance (0 to 6)")
         sentiment: Optional[str] = Field(default="neutral", description="Sentiment direction (positive, negative, neutral)")
         impact_score: float = Field(default=0.0, ge=-1.0, le=1.0, description="Normalized impact magnitude (-1.0 to 1.0)")
         ticker: Optional[str] = Field(default=None, description="Optional equity ticker symbol for quantitative validation")
@@ -220,8 +220,8 @@ def build_propagation_graph(
         lengths = nx.single_source_shortest_path_length(G, root)
         for target, dist in lengths.items():
             current_hop = G.nodes[target].get("hop_level", 0)
-            # Use deterministic shortest path distance capped at 4
-            deterministic_hop = min(dist, 4)
+            # Use deterministic shortest path distance capped at 6
+            deterministic_hop = min(dist, 6)
             if current_hop == 0 and target != root:
                 G.nodes[target]["hop_level"] = deterministic_hop
 

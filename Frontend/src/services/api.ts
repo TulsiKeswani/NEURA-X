@@ -11,7 +11,13 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import type { GraphResponse, TimeSeriesResponse, VectorDBStream } from "@/types/api.types"
+import type {
+  GraphResponse,
+  TimeSeriesResponse,
+  VectorDBStream,
+  VectorDBDocumentsResponse,
+  SearchRetrievalResponse,
+} from "@/types/api.types"
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -130,19 +136,6 @@ function generateSyntheticMarketData(ticker: string, period = "6mo"): TimeSeries
  */
 export async function analyzeEvent(query: string): Promise<GraphResponse> {
   const trimmed = query.trim() || "Crude oil prices rise 12%"
-  const lower = trimmed.toLowerCase()
-
-  // Primary Hackathon Challenge: OPEC Crude Oil Supply Shock multi-hop contagion
-  if (
-    lower.includes("crude") ||
-    lower.includes("oil") ||
-    lower.includes("opec") ||
-    lower.includes("cl=f") ||
-    lower.includes("commodity shock")
-  ) {
-    return loadMockGraphResponse()
-  }
-
 
   if (!FORCE_MOCK_DATA) {
     try {
@@ -163,7 +156,7 @@ export async function analyzeEvent(query: string): Promise<GraphResponse> {
     }
   }
 
-  // Resilient fallback
+  // Resilient fallback — only reached when backend is unavailable
   const fallback = await loadMockGraphResponse()
   fallback.query = trimmed
   fallback.event_summary = `Propagation impact analysis for '${trimmed}'. Network encompasses ${fallback.nodes.length} correlated assets and cross-sector entities.`
@@ -260,5 +253,105 @@ export async function triggerIngestion(
   }
 }
 
+/**
+ * Fetch all stored VectorDB documents + deduplication audit.
+ * Powers the VectorDB Live Monitor panel on the Home page.
+ */
+export async function fetchVectorDBDocuments(limit = 100): Promise<VectorDBDocumentsResponse | null> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/vectordb/documents?limit=${limit}`)
+    if (response.ok) {
+      const raw = await response.json()
+      isLiveBackendActive = true
+
+      // Normalize documents so chunk_id and primary_ticker_mentions are always well-defined
+      const docs: VectorDBDocument[] = (raw.documents || []).map((d: any) => ({
+        chunk_id: d.chunk_id || d.id || "chunk-" + Math.random().toString(36).substring(2, 8),
+        text_content: d.text_content || d.content || "",
+        publisher: d.publisher || "Financial Wire",
+        source_tier: d.source_tier || "Tier 2",
+        source_trust_score: typeof d.source_trust_score === "number" ? d.source_trust_score : 0.85,
+        primary_ticker_mentions: Array.isArray(d.primary_ticker_mentions) ? d.primary_ticker_mentions : [],
+        created_at: d.created_at || new Date().toISOString(),
+      }))
+
+      // Normalize dedup_audit and blocked duplicates list
+      const rawBlocked = raw.recent_duplicates_blocked || raw.dedup_audit?.recent_duplicates_blocked || []
+      const recentDuplicates: BlockedDuplicate[] = rawBlocked.map((b: any) => ({
+        text: b.rejected_text || b.text || "",
+        similarity_score: typeof b.similarity_score === "number" ? b.similarity_score : 1.0,
+        matched_text: b.matched_existing || b.matched_text || "",
+        timestamp: b.timestamp || new Date().toISOString(),
+      }))
+
+      const audit: DeduplicationAudit = {
+        duplicates_blocked_count:
+          typeof raw.duplicates_blocked_count === "number"
+            ? raw.duplicates_blocked_count
+            : raw.dedup_audit?.duplicates_blocked_count || 0,
+        recent_duplicates_blocked: recentDuplicates,
+      }
+
+      return {
+        total_documents: typeof raw.total_documents === "number" ? raw.total_documents : docs.length,
+        background_poller_active: Boolean(raw.background_poller_active),
+        poll_interval_seconds: raw.poll_interval_seconds || 60,
+        semantic_dedup_threshold: raw.semantic_dedup_threshold || 0.75,
+        duplicates_blocked_count: audit.duplicates_blocked_count,
+        documents: docs,
+        dedup_audit: audit,
+      }
+    }
+    console.warn("VectorDB documents fetch returned status", response.status)
+  } catch (err) {
+    console.warn("VectorDB documents fetch failed (backend may be offline):", err)
+  }
+  return null
+}
+
+/**
+ * Prompt 3: Execute semantic similarity search on stored vectors
+ * and retrieve nearest neighbor chunks along with updated user query history.
+ */
+export async function executeSemanticSearch(
+  query: string,
+  top_k = 5,
+): Promise<SearchRetrievalResponse | null> {
+  const cleanQuery = (query || "").trim()
+  if (!cleanQuery) return null
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: cleanQuery, top_k }),
+    })
+    if (response.ok) {
+      const data = (await response.json()) as SearchRetrievalResponse
+      isLiveBackendActive = true
+      return data
+    }
+  } catch (err) {
+    console.warn("Semantic vector search API error:", err)
+  }
+  return null
+}
+
+/**
+ * Fetch persistent user activity history log.
+ */
+export async function fetchUserActivityHistory(): Promise<any> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/user/history`)
+    if (response.ok) {
+      return await response.json()
+    }
+  } catch (err) {
+    console.warn("Error fetching user history:", err)
+  }
+  return null
+}
+
 /** Expose mock mode flag */
 export const isMockMode = FORCE_MOCK_DATA
+
