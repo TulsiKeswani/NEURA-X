@@ -29,7 +29,18 @@ import threading
 import urllib.request
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+# Automatically load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    _base = Path(__file__).resolve().parent.parent
+    load_dotenv(_base / ".env")
+    load_dotenv(_base.parent / ".env")
+except ImportError:
+    pass
 
 # Configure module-level logging
 logger = logging.getLogger("ingestion")
@@ -171,6 +182,96 @@ def _get_vector_db_module():
 # ============================================================================
 # Core Ingestion Pipeline Functions
 # ============================================================================
+
+def extract_publisher_from_url(url: str) -> str:
+    """Infers trusted publisher name from URL or domain host."""
+    if not url:
+        return "Tavily Financial Search"
+    u = url.lower()
+    if "reuters.com" in u:
+        return "Reuters"
+    if "bloomberg.com" in u:
+        return "Bloomberg"
+    if "wsj.com" in u or "dj.com" in u:
+        return "Wall Street Journal"
+    if "ft.com" in u or "financialtimes" in u:
+        return "Financial Times"
+    if "cnbc.com" in u:
+        return "CNBC"
+    if "marketwatch.com" in u:
+        return "MarketWatch"
+    if "investing.com" in u:
+        return "Investing.com"
+    if "federalreserve.gov" in u:
+        return "Federal Reserve"
+    if "sec.gov" in u:
+        return "SEC EDGAR"
+    if "spglobal.com" in u:
+        return "S&P Global"
+    if "forbes.com" in u:
+        return "Forbes"
+    if "yahoo.com" in u or "finance.yahoo" in u:
+        return "Yahoo Finance"
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.replace("www.", "")
+        if host:
+            parts = host.split(".")
+            name = parts[0].capitalize() if parts else host
+            return f"{name} Wire"
+    except Exception:
+        pass
+    return "Tavily Financial Search"
+
+
+def fetch_structured_tavily_articles(
+    query: str = "financial market news supply chain commodities",
+    api_key: Optional[str] = None,
+    max_results: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Fetches real-time financial articles using Tavily AI Search API with structured metadata.
+    """
+    key = api_key or os.getenv("TAVILY_API_KEY") or TAVILY_API_KEY
+    if not key or not key.strip() or TavilyClient is None:
+        return []
+
+    clean_query = query.strip() if isinstance(query, str) and query.strip() else "financial market news"
+    limit = max(1, min(max_results, 20))
+
+    try:
+        logger.info(f"Querying Tavily AI Search API for: '{clean_query}'...")
+        client = TavilyClient(api_key=key.strip())
+        response = client.search(
+            query=clean_query,
+            search_depth="basic",
+            max_results=limit,
+            include_answer=False
+        )
+        results = response.get("results", [])
+        articles: List[Dict[str, Any]] = []
+        for item in results:
+            title = str(item.get("title") or "").strip()
+            content = str(item.get("content") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not title and not content:
+                continue
+
+            pub = extract_publisher_from_url(url)
+            articles.append({
+                "title": title or content[:80],
+                "summary": content or title,
+                "link": url or None,
+                "source": pub,
+                "published": datetime.now(timezone.utc).isoformat(),
+                "chunk": f"[{title}] {content}" if title and content else (title or content),
+            })
+
+        logger.info(f"Tavily search retrieved {len(articles)} structured articles.")
+        return articles
+    except Exception as exc:
+        logger.warning(f"Tavily structured search encountered an error: {exc}.")
+        return []
 
 def fetch_news_from_tavily(
     query: str = "financial market news supply chain commodities",
@@ -617,24 +718,33 @@ def poll_and_store_news(
     target_limit = max(1, min(max_items, 50)) if isinstance(max_items, int) and max_items > 0 else 10
 
     try:
-        # 1. Attempt Tavily if API key is provided
-        tavily_results = fetch_news_from_tavily(query=query, max_results=target_limit)
-        if tavily_results is not None and len(tavily_results) > 0:
-            chunks.extend(tavily_results)
-            source_used = "tavily"
+        # 1. Attempt structured Tavily search if API key is provided
+        tavily_articles = fetch_structured_tavily_articles(query=query, max_results=target_limit)
 
-        # 2. If Tavily yielded fewer than target_limit, supplement with live structured RSS
-        structured_articles = fetch_structured_articles(
+        # 2. Live structured RSS feeds (WSJ, CNBC, Investing.com)
+        rss_articles = fetch_structured_articles(
             feed_urls=feed_urls,
             max_items=target_limit,
             stop_event=stop_event
         )
 
-        verified_data = process_and_verify_raw_articles(structured_articles)
+        all_articles = tavily_articles + rss_articles
+
+        if tavily_articles and rss_articles:
+            source_used = "mixed"
+        elif tavily_articles:
+            source_used = "tavily"
+        elif rss_articles:
+            source_used = "rss"
+        else:
+            source_used = "none"
+
+        # 3. Process and verify all incoming news against institutional source whitelist
+        verified_data = process_and_verify_raw_articles(all_articles)
         verified_chunks = verified_data.get("verified_chunks", [])
 
         # If zero real articles could be fetched (e.g. offline, rate limit, all feeds unreachable)
-        if not verified_chunks and not chunks:
+        if not verified_chunks:
             error_msg = "No live news articles could be retrieved from configured sources (Tavily/RSS)."
             logger.warning(error_msg)
             return _build_response_dict({
@@ -647,26 +757,21 @@ def poll_and_store_news(
                 "warning": None,
             })
 
-        source_used = "rss" if structured_articles else ("tavily" if chunks else "none")
-
-        # 3. Push verified semantic chunks with whitelist metadata to Vector DB
+        # 4. Push verified semantic chunks with whitelist metadata to Vector DB
         chunks_added = 0
         target_vdb = vector_db_instance if vector_db_instance is not None else _get_vector_db_module()
 
         if target_vdb is not None and hasattr(target_vdb, "add_documents") and callable(target_vdb.add_documents):
             try:
-                if verified_chunks:
-                    chunks_added = target_vdb.add_documents(verified_chunks)
-                elif chunks:
-                    chunks_added = target_vdb.add_documents(chunks)
-                logger.info(f"Pushed {chunks_added} verified live chunks to Vector Database.")
+                chunks_added = target_vdb.add_documents(verified_chunks)
+                logger.info(f"Pushed {chunks_added} verified live chunks to Vector Database (from {len(all_articles)} articles).")
             except Exception as vdb_exc:
                 error_msg = f"Vector database storage error: {vdb_exc}"
                 logger.error(error_msg)
                 return _build_response_dict({
                     "status": "error",
                     "timestamp": timestamp,
-                    "articles_processed": len(chunks),
+                    "articles_processed": len(all_articles),
                     "chunks_added": 0,
                     "source": source_used,
                     "error": error_msg,
@@ -680,7 +785,7 @@ def poll_and_store_news(
         return _build_response_dict({
             "status": "success",
             "timestamp": timestamp,
-            "articles_processed": len(chunks),
+            "articles_processed": len(all_articles),
             "chunks_added": chunks_added,
             "source": source_used,
             "error": None,

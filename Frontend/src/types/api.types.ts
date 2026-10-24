@@ -219,3 +219,24 @@ export interface SearchRetrievalResponse {
   updated_user_history: UserActivityItem[]
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// COPILOT CHAT TYPES
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ChatRequestPayload {
+  message: string
+  query?: string
+  graph_context?: GraphResponse | null
+  selected_node?: GraphNode | null
+  history?: Array<{ id: string; sender: "user" | "copilot"; text: string }>
+}
+
+export interface ChatResponsePayload {
+  reply: string
+  category: string
+  relevant_nodes: string[]
+  confidence: number
+  evidence_citations?: string[]
+}
+
+

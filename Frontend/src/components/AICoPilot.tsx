@@ -16,8 +16,11 @@ import {
   ArrowRight,
   RefreshCw,
   Layers,
+  Store,
+  Compass,
 } from "lucide-react"
 import type { GraphResponse, GraphNode, TimeSeriesResponse, EvidenceItem } from "@/types/api.types"
+import { sendCoPilotMessage } from "@/services/api"
 
 export interface AICoPilotProps {
   graphData: GraphResponse | null
@@ -35,20 +38,221 @@ interface ChatMessage {
   sender: "user" | "copilot"
   text: string
   timestamp: string
-  category?: "analysis" | "risk" | "evidence" | "scenario"
+  category?: string
   highlightNodes?: string[]
 }
 
 const QUICK_PROMPTS = [
-  { label: "Explain in Simple Terms", prompt: "Explain this event in simple language." },
-  { label: "Oil Impact on Inflation", prompt: "How can rising crude oil prices affect inflation?" },
-  { label: "Why Interest Rates Shift", prompt: "Why might interest-rate expectations change?" },
-  { label: "Indirect Sectors Affected", prompt: "Which sectors could be affected indirectly?" },
-  { label: "Path: Oil to Real Estate", prompt: "Show the path from oil prices to real estate." },
-  { label: "Evidence Audit", prompt: "What evidence supports this relationship?" },
-  { label: "Uncertain Relationships", prompt: "Which relationships are uncertain?" },
-  { label: "Mitigating Factors", prompt: "What other factors could reduce this impact?" },
+  {
+    label: "🏪 Ramesh's Grocery Shop",
+    prompt: "Ramesh has a Grocery shop. How does this event affect my business and what concrete prevention steps should I take?",
+  },
+  {
+    label: "💡 Explain in Simple Words",
+    prompt: "Can you explain this entire financial event in simple, human language without complex jargon?",
+  },
+  {
+    label: "🛡️ Business Prevention Plan",
+    prompt: "What is the concrete mitigation and prevention playbook for local businesses exposed to this shock?",
+  },
+  {
+    label: "⛓️ Trace Domino Effect",
+    prompt: "Trace the step-by-step domino effect from the root shock down to everyday consumer and retail prices.",
+  },
+  {
+    label: "📑 Evidence & Grounding Audit",
+    prompt: "What verified evidence supports this analysis, and how do you ensure zero hallucinations?",
+  },
+  {
+    label: "📉 Who Loses the Most?",
+    prompt: "Which sectors and equity tickers are hit hardest by this scenario, and who gains pricing power?",
+  },
 ]
+
+/**
+ * Lightweight, zero-dependency Markdown parser for structured ChatGPT/Gemini style formatting.
+ */
+function FormattedBotText({ text }: { text: string }) {
+  const lines = text.split("\n")
+
+  return (
+    <div className="copilot-markdown-content" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {lines.map((line, idx) => {
+        const trimmed = line.trim()
+
+        if (!trimmed) {
+          return <div key={idx} style={{ height: 4 }} />
+        }
+
+        // Horizontal Rule
+        if (trimmed === "---") {
+          return <hr key={idx} style={{ border: 0, borderTop: "1px solid #e2e8f0", margin: "6px 0" }} />
+        }
+
+        // Heading 3
+        if (trimmed.startsWith("### ")) {
+          return (
+            <h4
+              key={idx}
+              style={{
+                fontSize: 13.5,
+                fontWeight: 700,
+                color: "#0f172a",
+                margin: "4px 0 2px",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              {renderInlineStyles(trimmed.replace(/^###\s+/, ""))}
+            </h4>
+          )
+        }
+
+        // Heading 4
+        if (trimmed.startsWith("#### ")) {
+          return (
+            <h5
+              key={idx}
+              style={{
+                fontSize: 12.5,
+                fontWeight: 700,
+                color: "#1e293b",
+                margin: "4px 0 2px",
+              }}
+            >
+              {renderInlineStyles(trimmed.replace(/^####\s+/, ""))}
+            </h5>
+          )
+        }
+
+        // Blockquote / Callout Note
+        if (trimmed.startsWith("> ")) {
+          return (
+            <div
+              key={idx}
+              style={{
+                borderLeft: "3px solid #3b82f6",
+                background: "#f0f9ff",
+                padding: "6px 10px",
+                borderRadius: "0 6px 6px 0",
+                fontSize: 11.5,
+                color: "#0369a1",
+                margin: "4px 0",
+              }}
+            >
+              {renderInlineStyles(trimmed.replace(/^>\s+/, ""))}
+            </div>
+          )
+        }
+
+        // Bullet Point
+        if (trimmed.startsWith("• ") || trimmed.startsWith("- ")) {
+          return (
+            <div
+              key={idx}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 6,
+                paddingLeft: 4,
+                fontSize: 12,
+                lineHeight: 1.5,
+                color: "#334155",
+              }}
+            >
+              <span style={{ color: "#3b82f6", fontWeight: 700, marginTop: -1 }}>•</span>
+              <span style={{ flex: 1 }}>{renderInlineStyles(trimmed.replace(/^[•\-]\s+/, ""))}</span>
+            </div>
+          )
+        }
+
+        // Numbered List
+        const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/)
+        if (numMatch) {
+          return (
+            <div
+              key={idx}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 6,
+                paddingLeft: 4,
+                fontSize: 12,
+                lineHeight: 1.5,
+                color: "#334155",
+              }}
+            >
+              <span
+                style={{
+                  background: "#e0f2fe",
+                  color: "#0284c7",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  borderRadius: 4,
+                  padding: "1px 5px",
+                  marginTop: 2,
+                }}
+              >
+                {numMatch[1]}
+              </span>
+              <span style={{ flex: 1 }}>{renderInlineStyles(numMatch[2])}</span>
+            </div>
+          )
+        }
+
+        // Regular Paragraph
+        return (
+          <p key={idx} style={{ margin: 0, fontSize: 12, lineHeight: 1.55, color: "#334155" }}>
+            {renderInlineStyles(line)}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * Helper to parse bold (**bold**) and inline code (`code`) within text blocks.
+ */
+function renderInlineStyles(str: string): React.ReactNode {
+  // Split on bold markdown **text**
+  const boldParts = str.split(/(\*\*[^*]+\*\*)/g)
+
+  return boldParts.map((part, pIdx) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={pIdx} style={{ fontWeight: 650, color: "#0f172a" }}>
+          {part.slice(2, -2)}
+        </strong>
+      )
+    }
+
+    // Split on inline code `code`
+    const codeParts = part.split(/(`[^`]+`)/g)
+    return codeParts.map((sub, sIdx) => {
+      if (sub.startsWith("`") && sub.endsWith("`")) {
+        return (
+          <code
+            key={`${pIdx}-${sIdx}`}
+            style={{
+              background: "#f1f5f9",
+              color: "#0f172a",
+              padding: "1px 5px",
+              borderRadius: 4,
+              fontSize: 11,
+              fontFamily: "monospace",
+              border: "1px solid #e2e8f0",
+            }}
+          >
+            {sub.slice(1, -1)}
+          </code>
+        )
+      }
+      return sub
+    })
+  })
+}
 
 export function AICoPilot({
   graphData,
@@ -89,10 +293,10 @@ export function AICoPilot({
       {
         id: `welcome-${graphData.query || "active"}`,
         sender: "copilot",
-        text: `I have analyzed the financial impact graph for **"${rootLabel}"**.\n\n` +
-          `• **Topology:** ${nodeCount} financial entities across 4 causal hops, connected by ${edgeCount} dependency edges.\n` +
-          `• **Asset Universe:** ${affectedCount} correlated instruments & sectors modeled across monetary policy, banking, real estate, energy, and transportation.\n\n` +
-          `Ask me anything about causal pathways, evidence backing, interest rates, or mitigating factors!`,
+        text: `### 🌐 FinGraph CoPilot Ready: "${rootLabel}"\n\n` +
+          `• **Topology:** ${nodeCount} financial entities across multi-hop causal paths, connected by ${edgeCount} verified dependency edges.\n` +
+          `• **Asset Coverage:** ${affectedCount} correlated instruments & sectors modeled across commodity inputs, transport, banking, and retail.\n` +
+          `• **Business Intelligence:** Ask me how this event cascades into any real-world business (e.g. *Ramesh's Grocery Shop*, transport fleets, restaurants) or request simple plain-language explanations with concrete prevention steps!`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         category: "analysis",
       },
@@ -103,120 +307,7 @@ export function AICoPilot({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, isTyping])
 
-  // Contextual synthesis generator
-  const generateResponse = (prompt: string): string => {
-    if (!graphData) {
-      return "No active financial event graph is loaded. Please run an event analysis first."
-    }
-
-    const lower = prompt.toLowerCase()
-    const rootLabel = graphData.root_event?.label || graphData.nodes[0]?.label || "Root Event"
-
-    // 1. "Explain this event in simple language."
-    if (lower.includes("simple") || lower.includes("simple language") || lower.includes("explain this event")) {
-      return (
-        `### 💡 Simple Explanation of the Event\n\n` +
-        `• **What happened?** OPEC+ announced a 1.2 million barrel-per-day oil production cut. Less oil supply in the market causes global crude oil prices to jump 12%.\n` +
-        `• **Why does it matter?** Oil powers transportation and manufacturing. When fuel costs surge, it becomes more expensive to transport food, fly planes, and run factories.\n` +
-        `• **The chain reaction:** Higher costs push up inflation numbers. In response, the Federal Reserve and central banks must keep interest rates higher for longer. Higher interest rates make borrowing money and mortgages more expensive, which slows down real estate and puts pressure on banks and the stock market.`
-      )
-    }
-
-    // 2. "How can rising crude oil prices affect inflation?"
-    if (lower.includes("affect inflation") || (lower.includes("oil") && lower.includes("inflation"))) {
-      return (
-        `### 📈 How Crude Oil Prices Transmit to Inflation (Path A)\n\n` +
-        `• **Direct CPI Basket Contribution:** Energy commodities directly constitute ~7.2% of the Consumer Price Index (CPI) basket. Historically, every 10% sustained rise in crude oil adds 0.25–0.30 percentage points to headline CPI within 4–6 weeks.\n` +
-        `• **Refining Crack Spread Pass-Through:** Crude oil is refined into gasoline, diesel, and jet fuel. Diesel powers freight trucks, railways, and cargo ships, so shipping freight tariffs increase universally.\n` +
-        `• **Secondary Core Pass-Through:** Grocers, retailers, and industrial fabricators absorb or pass along transportation surcharges to end consumer goods.`
-      )
-    }
-
-    // 3. "Why might interest-rate expectations change?"
-    if (lower.includes("interest-rate") || lower.includes("interest rate") || lower.includes("expectations change")) {
-      return (
-        `### 🏛️ Why Interest-Rate Expectations Change\n\n` +
-        `• **Central Bank Mandate:** Central banks (like the Fed) target 2.0% inflation and price stability.\n` +
-        `• **Risk of De-Anchoring:** When headline inflation rises due to energy shocks, businesses and workers start expecting higher future prices, risking a wage-price spiral.\n` +
-        `• **Policy Postponement:** To anchor inflation expectations, central banks delay anticipated rate cuts or raise policy rates. Bond markets adjust by pricing out rate cuts, shifting short-term and terminal Fed Funds projections higher.`
-      )
-    }
-
-    // 4. "Which sectors could be affected indirectly?"
-    if (lower.includes("indirect") || lower.includes("sectors could be affected")) {
-      return (
-        `### 🏭 Sectors Indirectly Affected\n\n` +
-        `• **Airlines & Logistics (DAL):** Fuel represents 30–35% of total airline operating expenses. Rising jet fuel directly compresses EBIT operating margins.\n` +
-        `• **Commercial Banking (XLF):** Higher rates increase deposit funding costs ('deposit beta') and flatten the yield curve, compressing bank Net Interest Margins (NIM).\n` +
-        `• **Real Estate & Housing (XLRE):** Mortgage rates track the 10-year Treasury yield. Higher monthly mortgage payments price out home buyers and expand REIT cap rates.\n` +
-        `• **Industrial Manufacturing (XLI):** Electricity tariffs and petrochemical feedstocks raise unit manufacturing costs for chemicals, plastics, and capital goods.`
-      )
-    }
-
-    // 5. "Show the path from oil prices to real estate."
-    if (lower.includes("real estate") || (lower.includes("path") && lower.includes("oil"))) {
-      return (
-        `### 🛣️ Propagation Pathway: Crude Oil ➔ Real Estate\n\n` +
-        `1. **Crude Oil Prices (CL=F):** OPEC supply cut drives prompt crude benchmarks +12% higher.\n` +
-        `2. **Inflation Expectations (CPI):** Energy costs directly elevate headline consumer inflation expectations.\n` +
-        `3. **Interest-Rate Expectations:** Central banks delay rate cuts, maintaining a restrictive policy rate stance.\n` +
-        `4. **Borrowing Costs & Mortgage Rates:** 30-Year fixed mortgage rates price off benchmark 10-Year Treasury yields.\n` +
-        `5. **Real Estate Sector (XLRE):** Mortgage rates rise, reducing buyer affordability, depressing transaction volume, and expanding commercial property capitalization rates.`
-      )
-    }
-
-    // 6. "What evidence supports this relationship?"
-    if (lower.includes("evidence supports") || lower.includes("evidence") || lower.includes("audit")) {
-      const facts = graphData.edges.filter((e) => e.type === "observed")
-      const inferences = graphData.edges.filter((e) => e.type === "inferred")
-
-      return (
-        `### 📜 Evidence Grounding Audit\n\n` +
-        `• **Observed Facts (${facts.length} links):**\n` +
-        `  - _EIA Petroleum Status Report:_ Confirms OECD physical crude drawdowns from OPEC quota reductions.\n` +
-        `  - _Bureau of Labor Statistics (BLS):_ Validates ~7.2% direct energy weighting in headline CPI calculations.\n` +
-        `  - _SEC 10-K Disclosures (Delta Air Lines):_ Confirms fuel expense represents 30–35% of airline operational cost.\n` +
-        `  - _Freddie Mac PMMS Survey:_ Confirms >0.90 correlation between 10-Year Treasury yields and mortgage rates.\n\n` +
-        `• **Inferred Relationships (${inferences.length} links):**\n` +
-        `  - Derived via macroeconomic models (deposit beta migration, REIT capitalization rate expansion, equity discount rate CAPM).`
-      )
-    }
-
-    // 7. "Which relationships are uncertain?"
-    if (lower.includes("uncertain") || lower.includes("limitations")) {
-      return (
-        `### ⚠️ Uncertainties & Limitations in the Model\n\n` +
-        `• **Observed vs. Inferred:** Upstream commodity and fuel price increases are observed facts, but downstream bank credit losses and equity index multiples are inferred macroeconomic correlations.\n` +
-        `• **Not Guaranteed:** Correlation does not guarantee causation. Fiscal stimulus, corporate hedging, or currency swings can break expected transmission chains.\n` +
-        `• **Attenuating Confidence:** Upstream shock links carry 88–95% model confidence, whereas 4th-hop downstream market index impacts carry ~68–74% confidence due to macroeconomic noise.`
-      )
-    }
-
-    // 8. "What other factors could reduce this impact?"
-    if (lower.includes("reduce") || lower.includes("mitigat") || lower.includes("counter")) {
-      return (
-        `### 🛡️ Factors That Could Reduce This Impact\n\n` +
-        `• **Non-OPEC Production Surge:** U.S. shale and South American producers can expand drilling output to capture elevated prices, alleviating physical supply deficits.\n` +
-        `• **Strategic Petroleum Reserve (SPR) Releases:** Governments can release emergency crude reserves into spot markets to cushion prompt pricing spikes.\n` +
-        `• **Corporate Financial Hedging:** Major airlines and chemical producers with existing fuel swap/collar derivatives can buffer cost shocks for 6–12 months.\n` +
-        `• **Demand Destruction:** Higher retail pump prices can reduce discretionary consumer driving and travel, creating natural self-correcting price resistance.`
-      )
-    }
-
-    // Default synthesis
-    const chainSteps = graphData.hop_chain
-      .map((h) => `• **Hop ${h.hop} (${h.category}):** **${h.label}** [${h.impact_delta}] — _${h.description}_`)
-      .join("\n")
-
-    return (
-      `### 🌐 Multi-Hop Propagation Synthesis: "${rootLabel}"\n\n` +
-      `Here is the step-by-step causal transmission path computed across sectors:\n\n` +
-      `${chainSteps}\n\n` +
-      `**Analyst Takeaway:** The initial commodity shock at Hop 0 transmits through inflation and policy rates into asset valuations at Hop 4.`
-    )
-  }
-
-  const handleSend = (textToSend?: string) => {
+  const handleSend = async (textToSend?: string) => {
     const rawText = textToSend || inputValue
     if (!rawText.trim() || isTyping) return
 
@@ -231,18 +322,38 @@ export function AICoPilot({
     if (!textToSend) setInputValue("")
     setIsTyping(true)
 
-    // Simulate fast analytical reasoning
-    setTimeout(() => {
-      const responseText = generateResponse(rawText)
+    try {
+      // Dispatch to intelligent CoPilot endpoint (live FastAPI backend with client fallback)
+      const response = await sendCoPilotMessage(
+        rawText.trim(),
+        query,
+        graphData,
+        selectedNode,
+        messages.map((m) => ({ id: m.id, sender: m.sender, text: m.text }))
+      )
+
       const botMsg: ChatMessage = {
         id: `bot-${Date.now()}`,
         sender: "copilot",
-        text: responseText,
+        text: response.reply,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        category: response.category,
+        highlightNodes: response.relevant_nodes,
+      }
+
+      setMessages((prev) => [...prev, botMsg])
+    } catch (err) {
+      console.error("CoPilot error:", err)
+      const errorMsg: ChatMessage = {
+        id: `bot-err-${Date.now()}`,
+        sender: "copilot",
+        text: "I encountered a momentary connection hiccup. Please ask again or select one of the quick scenario prompts below.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       }
-      setMessages((prev) => [...prev, botMsg])
+      setMessages((prev) => [...prev, errorMsg])
+    } finally {
       setIsTyping(false)
-    }, 450)
+    }
   }
 
   if (!isOpen) return null
@@ -259,11 +370,11 @@ export function AICoPilot({
           position: "fixed",
           bottom: 24,
           right: 24,
-          width: isMinimized ? 320 : 440,
-          height: isMinimized ? 56 : 600,
+          width: isMinimized ? 320 : 470,
+          height: isMinimized ? 56 : 640,
           background: "#ffffff",
           borderRadius: 16,
-          boxShadow: "0 20px 45px -10px rgba(15, 23, 42, 0.22), 0 0 0 1px rgba(226, 232, 240, 0.9)",
+          boxShadow: "0 24px 50px -12px rgba(15, 23, 42, 0.28), 0 0 0 1px rgba(226, 232, 240, 0.9)",
           zIndex: 9999,
           display: "flex",
           flexDirection: "column",
@@ -280,50 +391,49 @@ export function AICoPilot({
             padding: "12px 16px",
             background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
             color: "#ffffff",
+            userSelect: "none",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
               style={{
-                width: 28,
-                height: 28,
+                width: 30,
+                height: 30,
                 borderRadius: 8,
-                background: "linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)",
+                background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
                 display: "grid",
                 placeItems: "center",
+                boxShadow: "0 2px 8px rgba(37,99,235,0.4)",
               }}
             >
-              <Sparkles size={15} color="#ffffff" />
+              <Bot size={17} color="#ffffff" />
             </div>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
-                Financial AI Co-Pilot
+                FinGraph AI CoPilot
                 <span
                   style={{
                     fontSize: 9.5,
-                    fontWeight: 800,
-                    padding: "2px 6px",
+                    background: "rgba(16, 185, 129, 0.25)",
+                    color: "#34d399",
+                    padding: "1px 6px",
                     borderRadius: 10,
-                    background: "rgba(59, 130, 246, 0.25)",
-                    color: "#93c5fd",
-                    border: "1px solid rgba(147, 197, 253, 0.3)",
+                    fontWeight: 600,
                   }}
                 >
-                  XAI REASONING
+                  Live Reasoning
                 </span>
               </div>
-              {!isMinimized && (
-                <div style={{ fontSize: 10.5, color: "#94a3b8" }}>
-                  {graphData ? `Context: ${graphData.nodes.length} nodes · 4 hops` : "Ready for events"}
-                </div>
-              )}
+              <div style={{ fontSize: 10.5, color: "#94a3b8" }}>
+                Multi-hop analysis & plain-language business advisor
+              </div>
             </div>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <button
               type="button"
-              onClick={() => setIsMinimized(!isMinimized)}
+              onClick={() => setIsMinimized((prev) => !prev)}
               style={{
                 background: "transparent",
                 border: 0,
@@ -334,9 +444,9 @@ export function AICoPilot({
                 display: "grid",
                 placeItems: "center",
               }}
-              title={isMinimized ? "Maximize" : "Minimize"}
+              title={isMinimized ? "Expand" : "Minimize"}
             >
-              {isMinimized ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
+              {isMinimized ? <Maximize2 size={15} /> : <Minimize2 size={15} />}
             </button>
             <button
               type="button"
@@ -392,7 +502,7 @@ export function AICoPilot({
                 padding: "14px 16px",
                 display: "flex",
                 flexDirection: "column",
-                gap: 12,
+                gap: 14,
                 background: "#fbfcfe",
               }}
             >
@@ -410,15 +520,15 @@ export function AICoPilot({
                       display: "flex",
                       alignItems: "flex-start",
                       gap: 8,
-                      maxWidth: "88%",
+                      maxWidth: "92%",
                       flexDirection: m.sender === "user" ? "row-reverse" : "row",
                     }}
                   >
                     <div
                       style={{
-                        width: 24,
-                        height: 24,
-                        borderRadius: 6,
+                        width: 26,
+                        height: 26,
+                        borderRadius: 7,
                         background: m.sender === "user" ? "#2563eb" : "#f1f5f9",
                         color: m.sender === "user" ? "#ffffff" : "#475569",
                         display: "grid",
@@ -442,18 +552,62 @@ export function AICoPilot({
                         boxShadow:
                           m.sender === "user"
                             ? "0 2px 8px rgba(37,99,235,0.2)"
-                            : "0 2px 6px rgba(15,23,42,0.06), 0 0 0 1px #e2e8f0",
-                        whiteSpace: "pre-wrap",
+                            : "0 2px 8px rgba(15,23,42,0.06), 0 0 0 1px #e2e8f0",
                       }}
                     >
-                      {m.text}
+                      {m.sender === "user" ? (
+                        <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                      ) : (
+                        <FormattedBotText text={m.text} />
+                      )}
+
+                      {/* Render entity pill links if present */}
+                      {m.highlightNodes && m.highlightNodes.length > 0 && onNavigateToNode && (
+                        <div
+                          style={{
+                            marginTop: 10,
+                            paddingTop: 8,
+                            borderTop: "1px solid #e2e8f0",
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 5,
+                            alignItems: "center",
+                          }}
+                        >
+                          <span style={{ fontSize: 10, color: "#64748b", fontWeight: 600 }}>
+                            Relevant Nodes:
+                          </span>
+                          {m.highlightNodes.map((nid) => (
+                            <button
+                              key={nid}
+                              type="button"
+                              onClick={() => onNavigateToNode(nid)}
+                              style={{
+                                background: "#f1f5f9",
+                                border: "1px solid #cbd5e1",
+                                borderRadius: 10,
+                                padding: "2px 7px",
+                                fontSize: 10,
+                                color: "#2563eb",
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 3,
+                              }}
+                            >
+                              <Layers size={9} />
+                              {nid}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <span
                     style={{
                       fontSize: 9.5,
                       color: "#94a3b8",
-                      margin: "3px 32px 0",
+                      margin: "3px 34px 0",
                     }}
                   >
                     {m.timestamp}
@@ -465,9 +619,9 @@ export function AICoPilot({
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div
                     style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: 6,
+                      width: 26,
+                      height: 26,
+                      borderRadius: 7,
                       background: "#f1f5f9",
                       display: "grid",
                       placeItems: "center",
@@ -486,10 +640,11 @@ export function AICoPilot({
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
+                      boxShadow: "0 2px 6px rgba(15,23,42,0.04)",
                     }}
                   >
                     <RefreshCw size={11} className="spin" />
-                    <span>Reasoning over graph topology & market evidence...</span>
+                    <span>Analyzing multi-hop transmission & business impact...</span>
                   </div>
                 </div>
               )}
@@ -517,18 +672,19 @@ export function AICoPilot({
                     background: "#ffffff",
                     border: "1px solid #cbd5e1",
                     color: "#334155",
-                    fontSize: 10.5,
+                    fontSize: 11,
                     fontWeight: 600,
-                    padding: "4px 9px",
+                    padding: "5px 10px",
                     borderRadius: 14,
                     cursor: "pointer",
                     flexShrink: 0,
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 4,
+                    gap: 5,
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
                   }}
                 >
-                  <Sparkles size={10} color="#3b82f6" />
+                  <Sparkles size={11} color="#3b82f6" />
                   {q.label}
                 </button>
               ))}
@@ -547,7 +703,7 @@ export function AICoPilot({
             >
               <input
                 type="text"
-                placeholder="Ask Co-Pilot about transmission risk, assets, or XAI..."
+                placeholder="Ask about Ramesh's grocery shop, logistics, or risk prevention..."
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSend()}
@@ -566,8 +722,8 @@ export function AICoPilot({
                 onClick={() => handleSend()}
                 disabled={!inputValue.trim() || isTyping}
                 style={{
-                  width: 34,
-                  height: 34,
+                  width: 36,
+                  height: 36,
                   borderRadius: 8,
                   background: inputValue.trim() && !isTyping ? "#2563eb" : "#e2e8f0",
                   color: "#ffffff",
@@ -579,7 +735,7 @@ export function AICoPilot({
                   transition: "background 0.15s ease",
                 }}
               >
-                <Send size={14} />
+                <Send size={15} />
               </button>
             </div>
           </>

@@ -8,10 +8,20 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Automatically load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    _base = Path(__file__).resolve().parent.parent
+    load_dotenv(_base / ".env")
+    load_dotenv(_base.parent / ".env")
+except ImportError:
+    pass
+
 
 logger = logging.getLogger(__name__)
-FLASH_MODEL = "gemini-2.5-flash"
-PRO_MODEL = "gemini-2.5-pro"
+FLASH_MODEL = "gemini-3.5-flash"
+PRO_MODEL = "gemini-3.5-flash"
 
 
 try:

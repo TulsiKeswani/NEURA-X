@@ -1,6 +1,8 @@
-import { AnimatePresence, motion } from "framer-motion"
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
+  Pause,
+  Play,
   ArrowRight,
   BarChart3,
   Bell,
@@ -38,8 +40,8 @@ import {
   UserRound,
   X,
   Zap,
-} from "lucide-react"
-import { useCallback, useEffect, useMemo, useState } from "react"
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   analyzeEvent,
@@ -49,13 +51,23 @@ import {
   executeSemanticSearch,
   fetchUserActivityHistory,
   triggerIngestion,
+  toggleIngestionWorker,
   isMockMode,
   isLiveBackendActive,
-} from "@/services/api"
-import { NetworkGraph } from "@/components/NetworkGraph"
-import { AICoPilot } from "@/components/AICoPilot"
-import { classifyNodeSector, SECTOR_CONFIGS } from "@/utils/sectorClassifier"
-import { useAsync } from "@/hooks/useAsync"
+} from "@/services/api";
+import { NetworkGraph } from "@/components/NetworkGraph";
+import { AICoPilot } from "@/components/AICoPilot";
+import {
+  SectorLensDeck,
+  SectorUnaffectedView,
+} from "@/components/SectorLensDeck";
+import {
+  SECTOR_DEFINITIONS,
+  filterGraphBySector,
+  getSectorSummaries,
+} from "@/utils/sectorLens";
+import { classifyNodeSector, SECTOR_CONFIGS } from "@/utils/sectorClassifier";
+import { useAsync } from "@/hooks/useAsync";
 import type {
   AffectedAsset,
   EvidenceItem,
@@ -72,10 +84,16 @@ import type {
   SearchRetrievalResponse,
   PricePoint,
   BenchmarkPoint,
-} from "@/types/api.types"
+} from "@/types/api.types";
 
 // ─── Page routing ──────────────────────────────────────────────────────────────
-export type Page = "landing" | "home" | "graph" | "path" | "timeseries" | "evidence"
+export type Page =
+  | "landing"
+  | "home"
+  | "graph"
+  | "path"
+  | "timeseries"
+  | "evidence";
 
 const pages: { id: Page; label: string; icon: typeof Home }[] = [
   { id: "home", label: "Home", icon: Home },
@@ -83,9 +101,9 @@ const pages: { id: Page; label: string; icon: typeof Home }[] = [
   { id: "path", label: "Propagation Path", icon: GitBranch },
   { id: "timeseries", label: "Time-Series Analysis", icon: LineChart },
   { id: "evidence", label: "Explainability & Evidence", icon: ShieldCheck },
-]
+];
 
-const spring = { type: "spring" as const, stiffness: 260, damping: 24 }
+const spring = { type: "spring" as const, stiffness: 260, damping: 24 };
 
 // ─── Shared UI atoms ───────────────────────────────────────────────────────────
 
@@ -97,7 +115,7 @@ function Logo({ onClick }: { onClick: () => void }) {
       </span>
       <span>FinGraph</span>
     </button>
-  )
+  );
 }
 
 function AppButton({
@@ -106,44 +124,54 @@ function AppButton({
   variant = "primary",
   className = "",
   disabled = false,
+  style,
 }: {
-  children: React.ReactNode
-  onClick?: () => void
-  variant?: "primary" | "ghost" | "soft"
-  className?: string
-  disabled?: boolean
+  children: React.ReactNode;
+  onClick?: () => void;
+  variant?: "primary" | "ghost" | "soft";
+  className?: string;
+  disabled?: boolean;
+  style?: React.CSSProperties;
 }) {
   return (
     <motion.button
       whileHover={disabled ? {} : { y: -2 }}
       whileTap={disabled ? {} : { scale: 0.97 }}
       className={`app-button ${variant} ${className} ${disabled ? "disabled" : ""}`}
+      style={{
+        ...(variant === "primary"
+          ? { color: "#ffffff", background: "#2563eb" }
+          : {}),
+        ...style,
+      }}
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
     >
       {children}
     </motion.button>
-  )
+  );
 }
 
 function PageMotion({
   children,
   className = "",
+  noTransform = false,
 }: {
-  children: React.ReactNode
-  className?: string
+  children: React.ReactNode;
+  className?: string;
+  noTransform?: boolean;
 }) {
   return (
     <motion.div
       className={`page-content ${className}`}
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      transition={{ duration: 0.3 }}
+      initial={noTransform ? { opacity: 0 } : { opacity: 0, y: 10 }}
+      animate={noTransform ? { opacity: 1 } : { opacity: 1, y: 0 }}
+      exit={noTransform ? { opacity: 0 } : { opacity: 0, y: -8 }}
+      transition={{ duration: 0.25 }}
     >
       {children}
     </motion.div>
-  )
+  );
 }
 
 function LoadingSpinner({ label = "Loading..." }: { label?: string }) {
@@ -152,7 +180,7 @@ function LoadingSpinner({ label = "Loading..." }: { label?: string }) {
       <Loader2 size={30} className="spin" />
       <span>{label}</span>
     </div>
-  )
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,22 +188,46 @@ function LoadingSpinner({ label = "Loading..." }: { label?: string }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PIPELINE_STAGES = [
-  { stage: 1, name: "Extracting relevant news from Vector DB", desc: "Querying ChromaDB vector embeddings & cosine nearest neighbors" },
-  { stage: 2, name: "Applying NLP & Extracting Entities", desc: "Extracting institutions, commodities, tickers, & sentiment orientation" },
-  { stage: 3, name: "Identifying Affected Sectors", desc: "Mapping direct tier-1 industries & secondary economic spillovers" },
-  { stage: 4, name: "Calculating Scores & Validating Evidences", desc: "Computing directional impact weights (-1.0 to +1.0) & XAI citations" },
-  { stage: 5, name: "Creating Knowledge Graph", desc: "Constructing NetworkX causal DAG nodes, edges, & hierarchy" },
-  { stage: 6, name: "Generating Propagation Path", desc: "Tracing Hop 0 to Hop 4 chronological shock cascade multi-chains" },
-]
+  {
+    stage: 1,
+    name: "Extracting relevant news from Vector DB",
+    desc: "Querying ChromaDB vector embeddings & cosine nearest neighbors",
+  },
+  {
+    stage: 2,
+    name: "Applying NLP & Extracting Entities",
+    desc: "Extracting institutions, commodities, tickers, & sentiment orientation",
+  },
+  {
+    stage: 3,
+    name: "Identifying Affected Sectors",
+    desc: "Mapping direct tier-1 industries & secondary economic spillovers",
+  },
+  {
+    stage: 4,
+    name: "Calculating Scores & Validating Evidences",
+    desc: "Computing directional impact weights (-1.0 to +1.0) & XAI citations",
+  },
+  {
+    stage: 5,
+    name: "Creating Knowledge Graph",
+    desc: "Constructing NetworkX causal DAG nodes, edges, & hierarchy",
+  },
+  {
+    stage: 6,
+    name: "Generating Propagation Path",
+    desc: "Tracing Hop 0 to Hop 4 chronological shock cascade multi-chains",
+  },
+];
 
 function PipelineProgressModal({
   currentStage,
   query,
 }: {
-  currentStage: number
-  query: string
+  currentStage: number;
+  query: string;
 }) {
-  const progressPct = Math.min(100, Math.round(((currentStage + 1) / 6) * 100))
+  const progressPct = Math.min(100, Math.round(((currentStage + 1) / 6) * 100));
 
   return (
     <motion.div
@@ -212,9 +264,22 @@ function PipelineProgressModal({
         }}
       >
         {/* Modal Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+          }}
+        >
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 4,
+              }}
+            >
               <span
                 style={{
                   background: "#eff6ff",
@@ -226,13 +291,20 @@ function PipelineProgressModal({
                   border: "1px solid #bfdbfe",
                 }}
               >
-                PROMPT 4 ORCHESTRATOR
+                AI ORCHESTRATOR
               </span>
               <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
-                6-Stage Financial Pipeline
+                6-Stage Analysis Pipeline
               </span>
             </div>
-            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#0f172a" }}>
+            <h2
+              style={{
+                margin: 0,
+                fontSize: 18,
+                fontWeight: 800,
+                color: "#0f172a",
+              }}
+            >
               Processing Financial Event Shock
             </h2>
             <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "#475569" }}>
@@ -240,10 +312,24 @@ function PipelineProgressModal({
             </p>
           </div>
           <div style={{ textAlign: "right" }}>
-            <span style={{ fontSize: 24, fontWeight: 800, color: "#2563eb", lineHeight: 1 }}>
+            <span
+              style={{
+                fontSize: 24,
+                fontWeight: 800,
+                color: "#2563eb",
+                lineHeight: 1,
+              }}
+            >
               {progressPct}%
             </span>
-            <small style={{ display: "block", fontSize: 10.5, color: "#94a3b8", fontWeight: 600 }}>
+            <small
+              style={{
+                display: "block",
+                fontSize: 10.5,
+                color: "#94a3b8",
+                fontWeight: 600,
+              }}
+            >
               Stage {Math.min(6, currentStage + 1)} of 6
             </small>
           </div>
@@ -272,18 +358,29 @@ function PipelineProgressModal({
         </div>
 
         {/* 6 Sequential Dynamic Steps UI */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            marginTop: 4,
+          }}
+        >
           {PIPELINE_STAGES.map((s, idx) => {
-            const isCompleted = idx < currentStage
-            const isCurrent = idx === currentStage
-            const isPending = idx > currentStage
+            const isCompleted = idx < currentStage;
+            const isCurrent = idx === currentStage;
+            const isPending = idx > currentStage;
 
             return (
               <motion.div
                 key={s.stage}
                 animate={{
                   scale: isCurrent ? 1.01 : 1,
-                  backgroundColor: isCurrent ? "#f0fdf4" : isCompleted ? "#f8fafc" : "#ffffff",
+                  backgroundColor: isCurrent
+                    ? "#f0fdf4"
+                    : isCompleted
+                      ? "#f8fafc"
+                      : "#ffffff",
                 }}
                 style={{
                   display: "flex",
@@ -312,18 +409,28 @@ function PipelineProgressModal({
                     background: isCompleted
                       ? "#10b981"
                       : isCurrent
-                      ? "#2563eb"
-                      : "#e2e8f0",
+                        ? "#2563eb"
+                        : "#e2e8f0",
                     color: isPending ? "#64748b" : "#ffffff",
-                    boxShadow: isCurrent ? "0 0 0 3px rgba(37,99,235,0.2)" : "none",
+                    boxShadow: isCurrent
+                      ? "0 0 0 3px rgba(37,99,235,0.2)"
+                      : "none",
                   }}
                 >
-                  {isCompleted ? <Check size={14} strokeWidth={3} /> : isCurrent ? <Loader2 size={14} className="spin" /> : s.stage}
+                  {isCompleted ? (
+                    <Check size={14} strokeWidth={3} />
+                  ) : isCurrent ? (
+                    <Loader2 size={14} className="spin" />
+                  ) : (
+                    s.stage
+                  )}
                 </div>
 
                 {/* Step Text Info */}
                 <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
                     <span
                       style={{
                         fontSize: 13,
@@ -374,7 +481,7 @@ function PipelineProgressModal({
                   </span>
                 </div>
               </motion.div>
-            )
+            );
           })}
         </div>
 
@@ -395,7 +502,7 @@ function PipelineProgressModal({
         </div>
       </motion.div>
     </motion.div>
-  )
+  );
 }
 
 function ErrorBanner({ message }: { message: string }) {
@@ -403,7 +510,7 @@ function ErrorBanner({ message }: { message: string }) {
     <div className="error-banner">
       <span>⚠ {message}</span>
     </div>
-  )
+  );
 }
 
 function BackendStatusBadge() {
@@ -417,9 +524,15 @@ function BackendStatusBadge() {
       }}
     >
       <Database size={12} color={isLiveBackendActive ? "#10b981" : "#f59e0b"} />
-      <span>{isLiveBackendActive ? "FastAPI Live" : isMockMode ? "Demo Mode" : "Resilient Active"}</span>
+      <span>
+        {isLiveBackendActive
+          ? "FastAPI Live"
+          : isMockMode
+            ? "Demo Mode"
+            : "Resilient Active"}
+      </span>
     </div>
-  )
+  );
 }
 
 // ─── Landing Page ──────────────────────────────────────────────────────────────
@@ -428,8 +541,8 @@ function Landing({
   navigate,
   hasAnalyzed = false,
 }: {
-  navigate: (page: Page) => void
-  hasAnalyzed?: boolean
+  navigate: (page: Page) => void;
+  hasAnalyzed?: boolean;
 }) {
   const systemModules = [
     {
@@ -437,10 +550,11 @@ function Landing({
       title: "Landing Page / Terminal Hub",
       icon: Terminal,
       category: "TELEMETRY",
-      description: "Primary system telemetry, autonomous ingestion monitoring, safety boundaries, and high-level terminal navigation.",
+      description:
+        "Primary system telemetry, autonomous ingestion monitoring, safety boundaries, and high-level terminal navigation.",
       capabilities: [
-        "Continuous 60s background ingestion telemetry",
-        "Enterprise AI safety and governance boundaries",
+        "Continuous background ingestion telemetry with live poller heartbeat",
+        "Zero-hallucination AI governance and evidence grounding boundaries",
         "Bloomberg-style system module directory & quick launch",
       ],
       page: "landing" as Page,
@@ -451,10 +565,11 @@ function Landing({
       title: "Search & Upload Control Center",
       icon: Search,
       category: "INGESTION",
-      description: "Vector DB natural language query interface, news search, activity history, and 6-stage analytical pipeline initiation.",
+      description:
+        "Vector DB natural language query interface, news search, activity history, and 6-stage analytical pipeline initiation.",
       capabilities: [
         "ChromaDB 384-dimensional semantic similarity search",
-        "1-click institutional preset queries (Crude, Rates, Tech)",
+        "5 pre-engineered macro scenarios (Crude Oil, Fed Rate Hike, Tech Sanctions, Red Sea, Gas)",
         "Automated 6-stage NLP extraction & graph compilation",
       ],
       page: "home" as Page,
@@ -465,9 +580,10 @@ function Landing({
       title: "Interactive Graph Analysis Page",
       icon: Network,
       category: "CAUSAL DAG",
-      description: "Multi-hop directional impact graph, progressive drill-down, sector spillover blocks, and embedded AI Financial Copilot.",
+      description:
+        "Full multi-hop directional impact graph rendered at once, hop-level filter bar, sector spillover blocks, node inspector panel, and embedded AI Financial Copilot.",
       capabilities: [
-        "Level 1 Sectors → Level 2 Spillovers → Level 3 Assets drill-down",
+        "Hop 0 to Hop 4+ all visible instantly; hop-level filter to narrow focus",
         "Color-coded hike/drop badges (▲/▼) with glow borders",
         "PageRank algorithm & ML Risk Score inspection per node",
       ],
@@ -479,7 +595,8 @@ function Landing({
       title: "Propagation Path Page",
       icon: GitBranch,
       category: "TIMELINE",
-      description: "Sequential multi-chain path tracing and cascading sidebar risk analysis across 4 deterministic hop layers.",
+      description:
+        "Sequential multi-chain path tracing and cascading sidebar risk analysis across 4 deterministic hop layers.",
       capabilities: [
         "Hop 0 to Hop 4 chronological shock cascade timeline",
         "Affected assets portfolio distribution with confidence %",
@@ -493,7 +610,8 @@ function Landing({
       title: "Time-Series Quantitative View",
       icon: LineChart,
       category: "EMPIRICAL",
-      description: "Empirical backtesting, Base 100 price normalization, and statistical Pearson correlation metrics vs. market benchmarks.",
+      description:
+        "Empirical backtesting, Base 100 price normalization, and statistical Pearson correlation metrics vs. market benchmarks.",
       capabilities: [
         "Real market data fusion via quantitative provider (yfinance)",
         "Pearson correlation calculation vs. S&P 500 benchmark (^GSPC)",
@@ -507,25 +625,27 @@ function Landing({
       title: "Explainability & Evidence Audit Page",
       icon: ShieldCheck,
       category: "AUDIT TRAIL",
-      description: "Transparent XAI evidence provenance, verbatim news wire excerpts, and strict Fact vs. Inference attribution.",
+      description:
+        "Transparent XAI evidence provenance, verbatim news wire excerpts, and strict Fact vs. Inference attribution.",
       capabilities: [
-        "100% grounded citations from verified market wires",
+        "100% grounded citations from RSS wires and Tavily live web research",
         "Explicit visual badge separation: Fact vs. Inferred Relation",
         "Verbatim source text audit trails with confidence metrics",
       ],
       page: "evidence" as Page,
       badgeColor: "#ec4899",
     },
-  ]
+  ];
 
   const productStories = [
     {
       step: "01",
       badge: "Ingestion & Vector Retrieval",
       title: "Search & Ingestion Control Center",
-      subtitle: "Autonomous News Ingestion & 6-Stage Analytical Pipeline Initiation",
+      subtitle:
+        "Autonomous News Ingestion & 6-Stage Analytical Pipeline Initiation",
       description:
-        "Every market analysis starts at the Control Center. Analysts can enter custom financial shock hypotheses or leverage automated background RSS ingestion that continuously parses financial wires every 60 seconds into a persistent ChromaDB vector store.",
+        "Every market analysis starts at the Control Center. Analysts can enter custom financial shock hypotheses or leverage automated background RSS ingestion that continuously parses financial wires from Dow Jones, CNBC Markets, and Investing.com into a persistent ChromaDB vector store.",
       points: [
         {
           title: "ChromaDB Semantic Search",
@@ -533,11 +653,11 @@ function Landing({
         },
         {
           title: "Preset Market Scenarios",
-          desc: "Instant access to pre-calibrated institutional events: Crude Oil Shocks, Semiconductor Export Bans, Federal Reserve Rate Hikes.",
+          desc: "Instant access to 5 pre-calibrated macro scenarios: Crude Oil Shock, European Gas Disruption, Fed Rate Hike, Tech Export Sanctions, and Red Sea Shipping Crisis.",
         },
         {
           title: "Live Ingestion Stream Telemetry",
-          desc: "Real-time visibility into articles processed, vector chunks committed, and ingestion poller heartbeat.",
+          desc: "Real-time visibility into articles processed, vector chunks stored in ChromaDB, duplicates blocked, and RSS poller status.",
         },
       ],
       image: "/screenshots/page_home.png",
@@ -549,13 +669,14 @@ function Landing({
       step: "02",
       badge: "Causal Graph Intelligence",
       title: "Interactive Multi-Hop Knowledge Graph",
-      subtitle: "Progressive Clutter-Free Drill-Down from Sectors to Target Assets",
+      subtitle:
+        "Full Multi-Hop Graph Rendered Instantly — Filter by Hop Level to Focus",
       description:
-        "Rather than overwhelming analysts with all nodes at once, FinGraph starts with clean Level 1 primary sectors. Clicking any sector unfolds secondary cross-industry spillovers, individual company assets, and macro indices with color-coded hike/drop badges.",
+        "FinGraph instantly renders the complete multi-hop causal graph — all sectors, spillover nodes, and impacted assets visible at the same time so analysts see the full market contagion picture immediately. A hop-level filter bar lets you narrow focus to any specific propagation layer, with color-coded impact badges (▲/▼) on every node.",
       points: [
         {
-          title: "Progressive Multi-Level Expansion",
-          desc: "Main event branches into High Sectors (Airlines, Transport, Petrochemicals). Clicking a sector unlocks downstream assets ($DAL, $FDX, $DOW).",
+          title: "Complete Contagion Map — All Hops at Once",
+          desc: "Root event and all downstream sectors, equities, and macro indices (Hop 0 to Hop 4+) are rendered simultaneously so you see the full shock cascade in one view.",
         },
         {
           title: "Hike & Drop Badges with Glow Cues",
@@ -600,7 +721,8 @@ function Landing({
       step: "04",
       badge: "Empirical Market Validation",
       title: "Quantitative Time-Series Analysis",
-      subtitle: "Empirical Backtesting & Pearson Correlation vs. S&P 500 Benchmark",
+      subtitle:
+        "Empirical Backtesting & Pearson Correlation vs. S&P 500 Benchmark",
       description:
         "Qualitative AI inferences are useless without mathematical market validation. FinGraph automatically retrieves historical price series for affected tickers and computes Pearson correlation against the S&P 500 benchmark (^GSPC) to verify fundamental relationships.",
       points: [
@@ -622,10 +744,14 @@ function Landing({
       page: "timeseries" as Page,
       btnText: "Analyze Time-Series",
     },
-  ]
+  ];
 
   return (
-    <motion.main className="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+    <motion.main
+      className="landing"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+    >
       {/* ─── BLOOMBERG TERMINAL TELEMETRY TICKER BAR ────────────────────── */}
       <div className="terminal-ticker-bar">
         <div className="ticker-segment">
@@ -635,7 +761,7 @@ function Landing({
         </div>
         <div className="ticker-segment">
           <span className="badge">FEED</span>
-          <span>CHROMA VECTOR DB // 384-DIM PARQUET</span>
+          <span>CHROMA VECTOR DB // 384-DIM EMBEDDINGS</span>
         </div>
         <div className="ticker-segment">
           <span className="badge">ENGINE</span>
@@ -643,11 +769,13 @@ function Landing({
         </div>
         <div className="ticker-segment">
           <span className="badge">AI REASONING</span>
-          <span>GEMINI 2.5 FLASH + PRO HYBRID</span>
+          <span>GEMINI 3.5 FLASH</span>
         </div>
         <div className="ticker-segment">
           <span className="badge">GROUNDING</span>
-          <span style={{ color: "#10b981", fontWeight: 700 }}>100% EVIDENCE AUDITED</span>
+          <span style={{ color: "#10b981", fontWeight: 700 }}>
+            TAVILY SEARCH + EVIDENCE AUDIT
+          </span>
         </div>
       </div>
 
@@ -658,11 +786,13 @@ function Landing({
           <button
             onClick={() => {
               if (!hasAnalyzed) {
-                alert("Please launch and execute an event in the Control Center first to generate the multi-stage analysis!")
-                navigate("home")
-                return
+                alert(
+                  "Please launch and execute an event in the Control Center first to generate the multi-stage analysis!",
+                );
+                navigate("home");
+                return;
               }
-              navigate("graph")
+              navigate("graph");
             }}
             style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
           >
@@ -671,11 +801,13 @@ function Landing({
           <button
             onClick={() => {
               if (!hasAnalyzed) {
-                alert("Please launch and execute an event in the Control Center first to trace the propagation path!")
-                navigate("home")
-                return
+                alert(
+                  "Please launch and execute an event in the Control Center first to trace the propagation path!",
+                );
+                navigate("home");
+                return;
               }
-              navigate("path")
+              navigate("path");
             }}
             style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
           >
@@ -684,11 +816,13 @@ function Landing({
           <button
             onClick={() => {
               if (!hasAnalyzed) {
-                alert("Please launch and execute an event in the Control Center first to unlock quantitative time-series!")
-                navigate("home")
-                return
+                alert(
+                  "Please launch and execute an event in the Control Center first to unlock quantitative time-series!",
+                );
+                navigate("home");
+                return;
               }
-              navigate("timeseries")
+              navigate("timeseries");
             }}
             style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
           >
@@ -697,11 +831,13 @@ function Landing({
           <button
             onClick={() => {
               if (!hasAnalyzed) {
-                alert("Please launch and execute an event in the Control Center first to inspect the evidence audit trail!")
-                navigate("home")
-                return
+                alert(
+                  "Please launch and execute an event in the Control Center first to inspect the evidence audit trail!",
+                );
+                navigate("home");
+                return;
               }
-              navigate("evidence")
+              navigate("evidence");
             }}
             style={{ opacity: hasAnalyzed ? 1 : 0.6 }}
           >
@@ -724,7 +860,8 @@ function Landing({
           transition={{ duration: 0.65 }}
         >
           <div className="eyebrow">
-            <span className="live-dot" /> Institutional Market Contagion & Financial Dependency Terminal
+            <span className="live-dot" /> Institutional Market Contagion &
+            Financial Dependency Terminal
           </div>
           <h1>
             From Macro
@@ -734,8 +871,9 @@ function Landing({
             <em>Contagion</em>
           </h1>
           <p>
-            An enterprise-grade financial intelligence system that maps how global shocks propagate across
-            sectors, industries, and asset prices with deterministic multi-hop graphs, empirical time-series
+            An enterprise-grade financial intelligence system that maps how
+            global shocks propagate across sectors, industries, and asset prices
+            with deterministic multi-hop graphs, empirical time-series
             validation, and verifiable XAI audit trails.
           </p>
 
@@ -761,15 +899,22 @@ function Landing({
             ))}
           </div>
 
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
             <AppButton onClick={() => navigate("home")} className="hero-cta">
               Open Control Center <ArrowRight size={16} />
             </AppButton>
             <button
               type="button"
               onClick={() => {
-                const el = document.getElementById("system-guide-section")
-                if (el) el.scrollIntoView({ behavior: "smooth" })
+                const el = document.getElementById("system-guide-section");
+                if (el) el.scrollIntoView({ behavior: "smooth" });
               }}
               style={{
                 background: "transparent",
@@ -791,7 +936,10 @@ function Landing({
           </div>
         </motion.div>
 
-        <div className="hero-visual" aria-label="Animated financial event graph">
+        <div
+          className="hero-visual"
+          aria-label="Animated financial event graph"
+        >
           <video
             className="hero-video"
             autoPlay
@@ -813,8 +961,9 @@ function Landing({
           </span>
           <h2>Enterprise Functional System Guide</h2>
           <p>
-            Structured architectural matrix detailing the functional purpose, data flows, and analytical
-            capabilities of every operational page within the FinGraph platform.
+            Structured architectural matrix detailing the functional purpose,
+            data flows, and analytical capabilities of every operational page
+            within the FinGraph platform.
           </p>
         </div>
 
@@ -823,7 +972,10 @@ function Landing({
             <div className="guide-card" key={mod.code}>
               <div>
                 <div className="guide-card-header">
-                  <div className="guide-card-icon" style={{ color: mod.badgeColor }}>
+                  <div
+                    className="guide-card-icon"
+                    style={{ color: mod.badgeColor }}
+                  >
                     <mod.icon size={20} />
                   </div>
                   <span className="guide-cmd-code">{mod.code}</span>
@@ -860,8 +1012,9 @@ function Landing({
           </span>
           <h2>How FinGraph Solves Market Intelligence</h2>
           <p>
-            Explore each core functionality side-by-side with institutional design rationale, visual interface
-            blueprints, and verified analytical workflows.
+            Explore each core functionality side-by-side with institutional
+            design rationale, visual interface blueprints, and verified
+            analytical workflows.
           </p>
         </div>
 
@@ -876,7 +1029,9 @@ function Landing({
                   {story.step} // {story.badge}
                 </span>
                 <h3>{story.title}</h3>
-                <strong style={{ fontSize: 15, color: "#1e293b", fontWeight: 700 }}>
+                <strong
+                  style={{ fontSize: 15, color: "#1e293b", fontWeight: 700 }}
+                >
                   {story.subtitle}
                 </strong>
                 <p>{story.description}</p>
@@ -909,7 +1064,9 @@ function Landing({
                     <span className="window-dot yellow" />
                     <span className="window-dot green" />
                   </div>
-                  <span className="window-title">fingraph://terminal/{story.page}</span>
+                  <span className="window-title">
+                    fingraph://terminal/{story.page}
+                  </span>
                   <span className="window-status-pill">LIVE RENDER</span>
                 </div>
                 <div className="story-frame-body">
@@ -926,69 +1083,300 @@ function Landing({
                         fontFamily: "'Inter', sans-serif",
                       }}
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 700, letterSpacing: "0.04em" }}>
-                          PROGRESSIVE DISCLOSURE CAUSAL TREE (4 LEVELS)
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 11,
+                            color: "#94a3b8",
+                            fontWeight: 700,
+                            letterSpacing: "0.04em",
+                          }}
+                        >
+                          MULTI-HOP CAUSAL GRAPH (ALL HOPS VISIBLE AT ONCE)
                         </span>
-                        <span style={{ background: "#1e293b", color: "#38bdf8", padding: "3px 8px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
+                        <span
+                          style={{
+                            background: "#1e293b",
+                            color: "#38bdf8",
+                            padding: "3px 8px",
+                            borderRadius: 4,
+                            fontSize: 10,
+                            fontWeight: 700,
+                          }}
+                        >
                           15 NODES · 16 EDGES
                         </span>
                       </div>
 
                       {/* Mockup nodes diagram */}
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, margin: "22px 0", flexWrap: "wrap" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 14,
+                          margin: "22px 0",
+                          flexWrap: "wrap",
+                        }}
+                      >
                         {/* Root Node */}
-                        <div style={{ background: "#1e293b", border: "2px solid #f59e0b", padding: "10px 14px", borderRadius: 10, textAlign: "center", boxShadow: "0 0 16px rgba(245,158,11,0.25)" }}>
-                          <span style={{ display: "block", fontSize: 9, color: "#f59e0b", fontWeight: 800 }}>ROOT EVENT (HOP 0)</span>
-                          <strong style={{ fontSize: 12, color: "#ffffff" }}>Crude Oil +12% Surge</strong>
-                          <span style={{ display: "inline-block", background: "#15803d", color: "#ffffff", padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 800, marginTop: 4 }}>
+                        <div
+                          style={{
+                            background: "#1e293b",
+                            border: "2px solid #f59e0b",
+                            padding: "10px 14px",
+                            borderRadius: 10,
+                            textAlign: "center",
+                            boxShadow: "0 0 16px rgba(245,158,11,0.25)",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "block",
+                              fontSize: 9,
+                              color: "#f59e0b",
+                              fontWeight: 800,
+                            }}
+                          >
+                            ROOT EVENT (HOP 0)
+                          </span>
+                          <strong style={{ fontSize: 12, color: "#ffffff" }}>
+                            Crude Oil +12% Surge
+                          </strong>
+                          <span
+                            style={{
+                              display: "inline-block",
+                              background: "#15803d",
+                              color: "#ffffff",
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              fontSize: 9,
+                              fontWeight: 800,
+                              marginTop: 4,
+                            }}
+                          >
                             ▲ +12.0% HIKE
                           </span>
                         </div>
 
                         <ArrowRight size={18} color="#64748b" />
 
-                        {/* Level 1 Sectors */}
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                          <div style={{ background: "#1e293b", border: "1px solid #10b981", padding: "7px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10b981" }} />
-                            <span style={{ fontSize: 11, color: "#f8fafc", fontWeight: 600 }}>Upstream Energy (+8.4%)</span>
-                            <span style={{ fontSize: 9, background: "#065f46", color: "#6ee7b7", padding: "1px 5px", borderRadius: 3, fontWeight: 800 }}>+ 2 Assets</span>
+                        {/* Sector Nodes — all rendered at once */}
+                        <div
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 8,
+                          }}
+                        >
+                          <div
+                            style={{
+                              background: "#1e293b",
+                              border: "1px solid #10b981",
+                              padding: "7px 12px",
+                              borderRadius: 8,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                background: "#10b981",
+                              }}
+                            />
+                            <span
+                              style={{
+                                fontSize: 11,
+                                color: "#f8fafc",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Upstream Energy (+8.4%)
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 9,
+                                background: "#065f46",
+                                color: "#6ee7b7",
+                                padding: "1px 5px",
+                                borderRadius: 3,
+                                fontWeight: 800,
+                              }}
+                            >
+                              + 2 Assets
+                            </span>
                           </div>
-                          <div style={{ background: "#1e293b", border: "1px solid #ef4444", padding: "7px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444" }} />
-                            <span style={{ fontSize: 11, color: "#f8fafc", fontWeight: 600 }}>Airlines Aviation (-7.0%)</span>
-                            <span style={{ fontSize: 9, background: "#991b1b", color: "#fca5a5", padding: "1px 5px", borderRadius: 3, fontWeight: 800 }}>+ 1 Asset</span>
+                          <div
+                            style={{
+                              background: "#1e293b",
+                              border: "1px solid #ef4444",
+                              padding: "7px 12px",
+                              borderRadius: 8,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                background: "#ef4444",
+                              }}
+                            />
+                            <span
+                              style={{
+                                fontSize: 11,
+                                color: "#f8fafc",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Airlines Aviation (-7.0%)
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 9,
+                                background: "#991b1b",
+                                color: "#fca5a5",
+                                padding: "1px 5px",
+                                borderRadius: 3,
+                                fontWeight: 800,
+                              }}
+                            >
+                              + 1 Asset
+                            </span>
                           </div>
-                          <div style={{ background: "#1e293b", border: "1px solid #ef4444", padding: "7px 12px", borderRadius: 8, display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#ef4444" }} />
-                            <span style={{ fontSize: 11, color: "#f8fafc", fontWeight: 600 }}>Freight Logistics (-4.8%)</span>
-                            <span style={{ fontSize: 9, background: "#991b1b", color: "#fca5a5", padding: "1px 5px", borderRadius: 3, fontWeight: 800 }}>+ 2 Assets</span>
+                          <div
+                            style={{
+                              background: "#1e293b",
+                              border: "1px solid #ef4444",
+                              padding: "7px 12px",
+                              borderRadius: 8,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                background: "#ef4444",
+                              }}
+                            />
+                            <span
+                              style={{
+                                fontSize: 11,
+                                color: "#f8fafc",
+                                fontWeight: 600,
+                              }}
+                            >
+                              Freight Logistics (-4.8%)
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 9,
+                                background: "#991b1b",
+                                color: "#fca5a5",
+                                padding: "1px 5px",
+                                borderRadius: 3,
+                                fontWeight: 800,
+                              }}
+                            >
+                              + 2 Assets
+                            </span>
                           </div>
                         </div>
 
                         <ArrowRight size={18} color="#64748b" />
 
-                        {/* Level 2 & 3 Target Assets */}
-                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
-                            $XOM ExxonMobil (<span style={{ color: "#34d399" }}>▲ +7.4%</span>)
+                        {/* Asset & Macro Nodes — all rendered at once */}
+                        <div
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                          }}
+                        >
+                          <div
+                            style={{
+                              background: "#0f172a",
+                              border: "1px solid #334155",
+                              padding: "6px 10px",
+                              borderRadius: 6,
+                              fontSize: 10,
+                              color: "#e2e8f0",
+                            }}
+                          >
+                            $XOM ExxonMobil (
+                            <span style={{ color: "#34d399" }}>▲ +7.4%</span>)
                           </div>
-                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
-                            $DAL Delta Air (<span style={{ color: "#f87171" }}>▼ -6.7%</span>)
+                          <div
+                            style={{
+                              background: "#0f172a",
+                              border: "1px solid #334155",
+                              padding: "6px 10px",
+                              borderRadius: 6,
+                              fontSize: 10,
+                              color: "#e2e8f0",
+                            }}
+                          >
+                            $DAL Delta Air (
+                            <span style={{ color: "#f87171" }}>▼ -6.7%</span>)
                           </div>
-                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
-                            $FDX FedEx Corp (<span style={{ color: "#f87171" }}>▼ -4.6%</span>)
+                          <div
+                            style={{
+                              background: "#0f172a",
+                              border: "1px solid #334155",
+                              padding: "6px 10px",
+                              borderRadius: 6,
+                              fontSize: 10,
+                              color: "#e2e8f0",
+                            }}
+                          >
+                            $FDX FedEx Corp (
+                            <span style={{ color: "#f87171" }}>▼ -4.6%</span>)
                           </div>
-                          <div style={{ background: "#0f172a", border: "1px solid #334155", padding: "6px 10px", borderRadius: 6, fontSize: 10, color: "#e2e8f0" }}>
-                            CPI Inflation (<span style={{ color: "#34d399" }}>▲ +3.8%</span>)
+                          <div
+                            style={{
+                              background: "#0f172a",
+                              border: "1px solid #334155",
+                              padding: "6px 10px",
+                              borderRadius: 6,
+                              fontSize: 10,
+                              color: "#e2e8f0",
+                            }}
+                          >
+                            CPI Inflation (
+                            <span style={{ color: "#34d399" }}>▲ +3.8%</span>)
                           </div>
                         </div>
                       </div>
 
-                      <div style={{ borderTop: "1px solid #1e293b", paddingTop: 10, display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b" }}>
-                        <span>GRAPH ALGO: PAGERANK CENTRALITY</span>
-                        <span>ML ALGO: MULTI-FACTOR RISK SCORE</span>
+                      <div
+                        style={{
+                          borderTop: "1px solid #1e293b",
+                          paddingTop: 10,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: 10,
+                          color: "#64748b",
+                        }}
+                      >
+                        <span>GRAPH ALGO: NETWORKX PAGERANK</span>
+                        <span>ML ALGO: IMPACT SCORE WEIGHTING</span>
                         <span>EMBEDDED AI COPILOT: ACTIVE</span>
                       </div>
                     </div>
@@ -1000,7 +1388,8 @@ function Landing({
                     />
                   )}
                   <div className="story-frame-overlay-badge">
-                    <Activity size={12} color="#10b981" /> Verified Production UI
+                    <Activity size={12} color="#10b981" /> Verified Production
+                    UI
                   </div>
                 </div>
               </div>
@@ -1019,10 +1408,15 @@ function Landing({
               </div>
               <div>
                 <h3>System AI Safety & Governance Boundaries</h3>
-                <p>Institutional Compliance and Operational Guardrails Specification</p>
+                <p>
+                  Institutional Compliance and Operational Guardrails
+                  Specification
+                </p>
               </div>
             </div>
-            <span className="safety-compliance-badge">GOVERNANCE LEVEL 4 · AUDITED</span>
+            <span className="safety-compliance-badge">
+              GOVERNANCE LEVEL 4 · AUDITED
+            </span>
           </div>
 
           <div className="safety-triad-grid">
@@ -1032,9 +1426,11 @@ function Landing({
               </span>
               <h4>1. Zero Automated Trade Execution</h4>
               <p>
-                FinGraph functions exclusively as a deterministic decision-support terminal. The platform
-                strictly prohibits automated trade execution, broker API routing, or autonomous order entry,
-                eliminating algorithmic execution and flash-crash risks.
+                FinGraph functions exclusively as a deterministic
+                decision-support terminal. The platform strictly prohibits
+                automated trade execution, broker API routing, or autonomous
+                order entry, eliminating algorithmic execution and flash-crash
+                risks.
               </p>
             </div>
 
@@ -1044,9 +1440,10 @@ function Landing({
               </span>
               <h4>2. No Fixed Future Stock Price Predictions</h4>
               <p>
-                The terminal rejects black-box prophetic price targets. All outputs model conditional causal
-                transmission probabilities, sector impact deltas, and empirical historical correlations rather than
-                fabricating absolute future stock prices.
+                The terminal rejects black-box prophetic price targets. All
+                outputs model conditional causal transmission probabilities,
+                sector impact deltas, and empirical historical correlations
+                rather than fabricating absolute future stock prices.
               </p>
             </div>
 
@@ -1056,9 +1453,11 @@ function Landing({
               </span>
               <h4>3. 100% Verifiable Evidence Grounding</h4>
               <p>
-                Every causal link and dependency edge is explicitly grounded in indexed financial news articles or
-                verifiable SEC filings. Inferred relationships are transparently badged with confidence scores and
-                audit trails to guarantee zero model hallucinations.
+                Every causal link and dependency edge is explicitly grounded in
+                live financial news articles from verified RSS wires and Tavily
+                AI-powered web research. Inferred relationships are
+                transparently badged with confidence scores and audit trails to
+                guarantee zero model hallucinations.
               </p>
             </div>
           </div>
@@ -1082,15 +1481,31 @@ function Landing({
           }}
         >
           <div>
-            <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", opacity: 0.9 }}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 800,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                opacity: 0.9,
+              }}
+            >
               READY FOR QUANTITATIVE MARKET INTELLIGENCE?
             </span>
-            <h2 style={{ fontFamily: "Plus Jakarta Sans", fontSize: 26, fontWeight: 700, margin: "6px 0 8px" }}>
+            <h2
+              style={{
+                fontFamily: "Plus Jakarta Sans",
+                fontSize: 26,
+                fontWeight: 700,
+                margin: "6px 0 8px",
+              }}
+            >
               Launch the FinGraph Terminal Console
             </h2>
             <p style={{ margin: 0, fontSize: 14, opacity: 0.9, maxWidth: 620 }}>
-              Query live macro events, inspect progressive multi-hop graphs, and validate causal market impacts
-              against real historical quantitative benchmarks.
+              Query live macro events, explore full multi-hop causal impact
+              graphs, and validate causal market impacts against real historical
+              quantitative benchmarks.
             </p>
           </div>
           <div style={{ display: "flex", gap: 12 }}>
@@ -1137,9 +1552,8 @@ function Landing({
         </div>
       </section>
     </motion.main>
-  )
+  );
 }
-
 
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
@@ -1149,10 +1563,10 @@ function Sidebar({
   ingestionStatus,
   hasAnalyzed,
 }: {
-  page: Page
-  navigate: (page: Page) => void
-  ingestionStatus: VectorDBStream | null
-  hasAnalyzed: boolean
+  page: Page;
+  navigate: (page: Page) => void;
+  ingestionStatus: VectorDBStream | null;
+  hasAnalyzed: boolean;
 }) {
   const lastUpdated = ingestionStatus
     ? new Date(ingestionStatus.timestamp).toLocaleTimeString([], {
@@ -1160,31 +1574,37 @@ function Sidebar({
         minute: "2-digit",
         second: "2-digit",
       })
-    : "—"
+    : "—";
 
   return (
     <aside className="sidebar">
       <Logo onClick={() => navigate("landing")} />
       <nav className="side-nav" aria-label="Application navigation">
         {pages.map((item) => {
-          const isLocked = !hasAnalyzed && item.id !== "home"
+          const isLocked = !hasAnalyzed && item.id !== "home";
           return (
             <button
               className={`${page === item.id ? "active" : ""} ${isLocked ? "disabled-nav" : ""}`}
               key={item.id}
               onClick={() => {
                 if (isLocked) {
-                  alert("Execute an event analysis from the Control Center first to unlock the 6-stage analytical pipeline!")
-                  return
+                  alert(
+                    "Execute an event analysis from the Control Center first to unlock the 6-stage analytical pipeline!",
+                  );
+                  return;
                 }
-                navigate(item.id)
+                navigate(item.id);
               }}
               style={{
                 opacity: isLocked ? 0.45 : 1,
                 cursor: isLocked ? "not-allowed" : "pointer",
                 position: "relative",
               }}
-              title={isLocked ? "Locked: Run an analysis in Control Center to unlock" : item.label}
+              title={
+                isLocked
+                  ? "Locked: Run an analysis in Control Center to unlock"
+                  : item.label
+              }
             >
               <item.icon size={16} />
               <span>{item.label}</span>
@@ -1195,16 +1615,24 @@ function Sidebar({
                   style={{ marginLeft: "auto", marginRight: 4 }}
                 />
               )}
-              {page === item.id && <motion.i layoutId="nav-pill" transition={spring} />}
+              {page === item.id && (
+                <motion.i layoutId="nav-pill" transition={spring} />
+              )}
             </button>
-          )
+          );
         })}
       </nav>
       <div className="sidebar-status">
-        <span className={`pulse ${ingestionStatus?.status === "success" ? "active" : ""}`} />
+        <span
+          className={`pulse ${ingestionStatus?.status === "success" ? "active" : ""}`}
+        />
         <div>
           <strong>
-            {isLiveBackendActive ? "Live Ingestion" : isMockMode ? "Demo Mode" : "Background Poller"}
+            {isLiveBackendActive
+              ? "Live Ingestion"
+              : isMockMode
+                ? "Demo Mode"
+                : "Background Poller"}
           </strong>
           <small>
             {ingestionStatus
@@ -1214,11 +1642,11 @@ function Sidebar({
         </div>
       </div>
     </aside>
-  )
+  );
 }
 
 function ShellHeader({ page }: { page: Page }) {
-  const title = pages.find((item) => item.id === page)?.label
+  const title = pages.find((item) => item.id === page)?.label;
   return (
     <header className="shell-header">
       <div className="breadcrumb">
@@ -1234,7 +1662,7 @@ function ShellHeader({ page }: { page: Page }) {
         <div className="avatar">FA</div>
       </div>
     </header>
-  )
+  );
 }
 
 // ─── Home View (Control Center & Data Ingestion) ───────────────────────────────
@@ -1249,7 +1677,8 @@ const SCENARIOS = [
   },
   {
     title: "European Gas Supply Disruption",
-    query: "Natural gas supply disruption impacts European chemical and utility producers",
+    query:
+      "Natural gas supply disruption impacts European chemical and utility producers",
     path: "Commodity (TTF) → Utilities (XLU) → Chemical Production → Industrials",
     icon: Globe2,
     tone: "red",
@@ -1263,19 +1692,21 @@ const SCENARIOS = [
   },
   {
     title: "Tech Export Sanctions",
-    query: "U.S. imposes strict semiconductor export restrictions on advanced AI chips",
+    query:
+      "U.S. imposes strict semiconductor export restrictions on advanced AI chips",
     path: "Semiconductors (SMH) → Cloud Providers → Hardware OEMs",
     icon: Building2,
     tone: "cyan",
   },
   {
     title: "Red Sea Maritime Shipping Disruption",
-    query: "Geopolitical conflict blocks Suez maritime routes surging freight tariffs",
+    query:
+      "Geopolitical conflict blocks Suez maritime routes surging freight tariffs",
     path: "Container Shipping (ZIM) → Supply Chain → Consumer Goods",
     icon: Globe2,
     tone: "violet",
   },
-]
+];
 
 function HomeView({
   navigate,
@@ -1283,130 +1714,162 @@ function HomeView({
   ingestionStatus,
   onRefreshIngestion,
 }: {
-  navigate: (page: Page) => void
-  onQuerySubmit: (query: string) => void
-  ingestionStatus: VectorDBStream | null
-  onRefreshIngestion: () => Promise<void>
+  navigate: (page: Page) => void;
+  onQuerySubmit: (query: string) => void;
+  ingestionStatus: VectorDBStream | null;
+  onRefreshIngestion: () => Promise<void>;
 }) {
-  const [query, setQuery] = useState("")
-  const [activeTab, setActiveTab] = useState<"custom" | "scenarios">("custom")
-  const [categoryFilter, setCategoryFilter] = useState<string>("all")
-  const [searchFilter, setSearchFilter] = useState<string>("")
-  const [isTriggering, setIsTriggering] = useState(false)
-  const [triggerMessage, setTriggerMessage] = useState<string | null>(null)
+  const [query, setQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<"custom" | "scenarios">("custom");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [searchFilter, setSearchFilter] = useState<string>("");
+  const [isTriggering, setIsTriggering] = useState(false);
+  const [isTogglingPoller, setIsTogglingPoller] = useState(false);
+  const [triggerMessage, setTriggerMessage] = useState<string | null>(null);
+
+  const [isIngestingActive, setIsIngestingActive] = useState(false);
+
+  const handleTogglePoller = async () => {
+    const nextState = !isIngestingActive;
+    setIsIngestingActive(nextState);
+    setVdbData((prev) =>
+      prev ? { ...prev, background_poller_active: nextState } : prev,
+    );
+    setTriggerMessage(nextState ? "Ingestion started." : "Ingestion stopped.");
+
+    try {
+      await toggleIngestionWorker(nextState ? "start" : "stop");
+      loadVDBData();
+    } catch {
+      // quiet fallback
+    } finally {
+      setTimeout(() => setTriggerMessage(null), 3000);
+    }
+  };
 
   // ── VectorDB Live Monitor state ────────────────────────────────────────────
-  const [vdbData, setVdbData] = useState<VectorDBDocumentsResponse | null>(null)
-  const [vdbLoading, setVdbLoading] = useState(false)
-  const [vdbError, setVdbError] = useState<string | null>(null)
-  const [dedupOpen, setDedupOpen] = useState(false)
-  const [vdbDocFilter, setVdbDocFilter] = useState("")
+  const [vdbData, setVdbData] = useState<VectorDBDocumentsResponse | null>(
+    null,
+  );
+  const [vdbLoading, setVdbLoading] = useState(false);
+  const [vdbError, setVdbError] = useState<string | null>(null);
+  const [dedupOpen, setDedupOpen] = useState(false);
+  const [vdbDocFilter, setVdbDocFilter] = useState("");
 
   // ── Prompt 3: Semantic Vector Search & Activity History State ─────────────
-  const [isSearchingVector, setIsSearchingVector] = useState(false)
-  const [searchRetrievalResult, setSearchRetrievalResult] = useState<SearchRetrievalResponse | null>(null)
-  const [userActivityList, setUserActivityList] = useState<UserActivityItem[]>([])
-  const [showHistoryModal, setShowHistoryModal] = useState(false)
+  const [isSearchingVector, setIsSearchingVector] = useState(false);
+  const [searchRetrievalResult, setSearchRetrievalResult] =
+    useState<SearchRetrievalResponse | null>(null);
+  const [userActivityList, setUserActivityList] = useState<UserActivityItem[]>(
+    [],
+  );
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
 
   const loadUserHistory = useCallback(async () => {
     try {
-      const data = await fetchUserActivityHistory()
+      const data = await fetchUserActivityHistory();
       if (data?.history) {
-        setUserActivityList(data.history)
+        setUserActivityList(data.history);
       }
     } catch {
       // quiet fail
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
-    loadUserHistory()
-  }, [loadUserHistory])
+    loadUserHistory();
+  }, [loadUserHistory]);
 
   const handleVectorSearchOnly = async (q: string) => {
-    const trimmed = q.trim()
-    if (!trimmed) return
-    setIsSearchingVector(true)
+    const trimmed = q.trim();
+    if (!trimmed) return;
+    setIsSearchingVector(true);
     try {
-      const result = await executeSemanticSearch(trimmed, 4)
+      const result = await executeSemanticSearch(trimmed, 4);
       if (result) {
-        setSearchRetrievalResult(result)
+        setSearchRetrievalResult(result);
         if (result.updated_user_history) {
-          setUserActivityList(result.updated_user_history)
+          setUserActivityList(result.updated_user_history);
         }
       }
     } finally {
-      setIsSearchingVector(false)
+      setIsSearchingVector(false);
     }
-  }
+  };
 
   const loadVDBData = useCallback(async () => {
-
-    setVdbLoading(true)
-    setVdbError(null)
+    setVdbLoading(true);
+    setVdbError(null);
     try {
-      const data = await fetchVectorDBDocuments(100)
-      if (data) setVdbData(data)
-      else setVdbError("Backend offline — VectorDB monitor unavailable.")
+      const data = await fetchVectorDBDocuments(100);
+      if (data) setVdbData(data);
+      else setVdbError("Backend offline — VectorDB monitor unavailable.");
     } catch {
-      setVdbError("Failed to fetch VectorDB documents.")
+      setVdbError("Failed to fetch VectorDB documents.");
     } finally {
-      setVdbLoading(false)
+      setVdbLoading(false);
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
-    loadVDBData()
-    const interval = setInterval(loadVDBData, 30000) // auto-refresh every 30s
-    return () => clearInterval(interval)
-  }, [loadVDBData])
+    loadVDBData();
+    const interval = setInterval(loadVDBData, 30000); // auto-refresh every 30s
+    return () => clearInterval(interval);
+  }, [loadVDBData]);
 
   const filteredVdbDocs = useMemo(() => {
-    if (!vdbData?.documents) return []
-    const q = vdbDocFilter.toLowerCase().trim()
-    if (!q) return vdbData.documents
+    if (!vdbData?.documents) return [];
+    const q = vdbDocFilter.toLowerCase().trim();
+    if (!q) return vdbData.documents;
     return vdbData.documents.filter(
       (d) =>
         d.text_content.toLowerCase().includes(q) ||
         d.publisher.toLowerCase().includes(q) ||
         d.source_tier.toLowerCase().includes(q) ||
-        (d.primary_ticker_mentions || []).some((t) => t.toLowerCase().includes(q)),
-    )
-  }, [vdbData, vdbDocFilter])
+        (d.primary_ticker_mentions || []).some((t) =>
+          t.toLowerCase().includes(q),
+        ),
+    );
+  }, [vdbData, vdbDocFilter]);
 
   const handleAnalyze = (q: string) => {
-    if (!q.trim()) return
-    onQuerySubmit(q.trim())
-    navigate("graph")
-  }
+    if (!q.trim()) return;
+    onQuerySubmit(q.trim());
+    navigate("graph");
+  };
 
   const handleManualIngest = async () => {
-    setIsTriggering(true)
-    setTriggerMessage(null)
+    setIsTriggering(true);
+    setTriggerMessage(null);
     try {
-      const res = await triggerIngestion(query.trim() || undefined)
-      await onRefreshIngestion()
-      setTriggerMessage(res.message || "Live news ingestion cycle executed successfully!")
+      const res = await triggerIngestion(query.trim() || undefined);
+      await onRefreshIngestion();
+      await loadVDBData();
+      setTriggerMessage(
+        res.message || "Live news ingestion cycle executed successfully!",
+      );
     } catch {
-      setTriggerMessage("Ingestion executed.")
+      setTriggerMessage("Ingestion executed.");
     } finally {
-      setIsTriggering(false)
-      setTimeout(() => setTriggerMessage(null), 4000)
+      setIsTriggering(false);
+      setTimeout(() => setTriggerMessage(null), 6000);
     }
-  }
+  };
 
   // Filter headlines
   const filteredHeadlines = useMemo(() => {
-    if (!ingestionStatus?.recent_headlines) return []
+    if (!ingestionStatus?.recent_headlines) return [];
     return ingestionStatus.recent_headlines.filter((h) => {
-      const matchCat = categoryFilter === "all" || h.category.toLowerCase() === categoryFilter.toLowerCase()
+      const matchCat =
+        categoryFilter === "all" ||
+        h.category.toLowerCase() === categoryFilter.toLowerCase();
       const matchSearch =
         !searchFilter.trim() ||
         h.title.toLowerCase().includes(searchFilter.toLowerCase().trim()) ||
-        h.source.toLowerCase().includes(searchFilter.toLowerCase().trim())
-      return matchCat && matchSearch
-    })
-  }, [ingestionStatus, categoryFilter, searchFilter])
+        h.source.toLowerCase().includes(searchFilter.toLowerCase().trim());
+      return matchCat && matchSearch;
+    });
+  }, [ingestionStatus, categoryFilter, searchFilter]);
 
   return (
     <PageMotion className="home-view">
@@ -1415,11 +1878,53 @@ function HomeView({
           <span className="eyebrow-text">Intelligence Terminal</span>
           <h1>Event Ingestion & Market Impact Analysis</h1>
           <p>
-            Trigger live news polling, ingest financial context into ChromaDB, and trace
-            multi-hop propagation across global market assets.
+            Trigger live news polling, ingest financial context into ChromaDB,
+            and trace multi-hop propagation across global market assets.
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          {/* Simple Start Ingestion / Stop Ingestion Toggle Button */}
+          <button
+            type="button"
+            onClick={handleTogglePoller}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              padding: "8px 16px",
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.15s ease",
+              border: isIngestingActive
+                ? "1px solid #fecaca"
+                : "1px solid #bbf7d0",
+              background: isIngestingActive ? "#ef4444" : "#10b981",
+              color: "#ffffff",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+            }}
+          >
+            {isIngestingActive ? (
+              <>
+                <Pause size={14} />
+                <span>Stop Ingestion</span>
+              </>
+            ) : (
+              <>
+                <Play size={14} />
+                <span>Start Ingestion</span>
+              </>
+            )}
+          </button>
+
           <AppButton
             variant="soft"
             onClick={handleManualIngest}
@@ -1427,7 +1932,9 @@ function HomeView({
             className="ingest-trigger-btn"
           >
             <RefreshCw size={14} className={isTriggering ? "spin" : ""} />
-            <span>{isTriggering ? "Ingesting Feeds..." : "Trigger Live Ingestion"}</span>
+            <span>
+              {isTriggering ? "Ingesting Feeds..." : "Trigger Live Ingestion"}
+            </span>
           </AppButton>
         </div>
       </div>
@@ -1458,14 +1965,43 @@ function HomeView({
       {/* Live ingestion status & stats banner */}
       {ingestionStatus && (
         <div className="ingestion-strip">
-          <span className="pulse active" />
-          <strong>Passive Ingestion Worker Active</strong>
+          <span
+            className={`pulse ${vdbData?.background_poller_active ? "active" : ""}`}
+            style={{
+              background: vdbData?.background_poller_active
+                ? "#10b981"
+                : "#f59e0b",
+            }}
+          />
+          <strong>
+            {vdbData?.background_poller_active
+              ? "Live Ingestion Engine Active (Polling Every 60s)"
+              : "Auto-Ingestion Paused (Space Saver Mode Active)"}
+          </strong>
           <span className="sep">·</span>
-          <span>{ingestionStatus.articles_processed} Financial Articles Processed</span>
+          <span>
+            {vdbData?.total_documents ?? ingestionStatus.vector_chunks_stored}{" "}
+            Chunks in VectorDB
+          </span>
           <span className="sep">·</span>
-          <span>{ingestionStatus.vector_chunks_stored} Vector Chunks in ChromaDB</span>
+          <span
+            style={{
+              color:
+                (vdbData?.duplicates_blocked_count ?? 0) > 0
+                  ? "#dc2626"
+                  : "#475569",
+              fontWeight: 700,
+            }}
+          >
+            {vdbData?.duplicates_blocked_count ??
+              ingestionStatus.duplicates_blocked_count ??
+              0}{" "}
+            Duplicates Filtered
+          </span>
           <span className="sep">·</span>
-          <span>Feeds: Dow Jones, CNBC Markets, Investing.com</span>
+          <span>
+            Feeds: Wall Street Journal, CNBC, Investing.com, Tavily AI Search
+          </span>
         </div>
       )}
 
@@ -1476,7 +2012,14 @@ function HomeView({
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Database size={17} color="#2563eb" />
             <div>
-              <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>
+              <h2
+                style={{
+                  margin: 0,
+                  fontSize: 15,
+                  fontWeight: 700,
+                  color: "#0f172a",
+                }}
+              >
                 VectorDB Live Monitor
               </h2>
               <span style={{ fontSize: 11, color: "#64748b" }}>
@@ -1493,10 +2036,10 @@ function HomeView({
                 gap: 5,
                 fontSize: 11,
                 fontWeight: 600,
-                color: vdbData?.background_poller_active ? "#059669" : "#dc2626",
-                background: vdbData?.background_poller_active ? "#ecfdf5" : "#fef2f2",
-                border: `1px solid ${vdbData?.background_poller_active ? "#a7f3d0" : "#fecaca"}`,
-                padding: "3px 10px",
+                color: isIngestingActive ? "#059669" : "#d97706",
+                background: isIngestingActive ? "#ecfdf5" : "#fffbeb",
+                border: `1px solid ${isIngestingActive ? "#a7f3d0" : "#fde68a"}`,
+                padding: "4px 10px",
                 borderRadius: 20,
               }}
             >
@@ -1505,17 +2048,11 @@ function HomeView({
                   width: 7,
                   height: 7,
                   borderRadius: "50%",
-                  background: vdbData?.background_poller_active ? "#10b981" : "#ef4444",
+                  background: isIngestingActive ? "#10b981" : "#f59e0b",
                   display: "inline-block",
                 }}
               />
-              {vdbData
-                ? vdbData.background_poller_active
-                  ? `Poller Active · every ${vdbData.poll_interval_seconds}s`
-                  : "Poller Inactive"
-                : vdbLoading
-                ? "Connecting..."
-                : "Backend Offline"}
+              {isIngestingActive ? "Poller Active" : "Poller Stopped"}
             </span>
             <button
               className="vdb-refresh-btn"
@@ -1532,34 +2069,49 @@ function HomeView({
         {/* Stat Cards — always show (zeros if offline) */}
         <div className="vdb-stat-row">
           <div className="vdb-stat-card">
-            <span className="vdb-stat-val">{vdbData?.total_documents ?? (vdbLoading ? "…" : "—")}</span>
+            <span className="vdb-stat-val">
+              {vdbData?.total_documents ?? (vdbLoading ? "…" : "—")}
+            </span>
             <span className="vdb-stat-label">Chunks Stored</span>
           </div>
           <div className="vdb-stat-card blocked">
-            <span className="vdb-stat-val">{vdbData?.duplicates_blocked_count ?? (vdbLoading ? "…" : "—")}</span>
+            <span className="vdb-stat-val">
+              {vdbData?.duplicates_blocked_count ?? (vdbLoading ? "…" : "—")}
+            </span>
             <span className="vdb-stat-label">Duplicates Blocked</span>
           </div>
           <div className="vdb-stat-card">
             <span className="vdb-stat-val">
-              {vdbData ? `${(vdbData.semantic_dedup_threshold * 100).toFixed(0)}%` : "—"}
+              {vdbData
+                ? `${(vdbData.semantic_dedup_threshold * 100).toFixed(0)}%`
+                : "—"}
             </span>
             <span className="vdb-stat-label">Dedup Threshold</span>
           </div>
           <div className="vdb-stat-card">
             <span className="vdb-stat-val tier1">
-              {vdbData ? vdbData.documents.filter((d) => d.source_tier === "Tier 1").length : "—"}
+              {vdbData
+                ? vdbData.documents.filter((d) => d.source_tier === "Tier 1")
+                    .length
+                : "—"}
             </span>
             <span className="vdb-stat-label">Tier 1 Sources</span>
           </div>
           <div className="vdb-stat-card">
             <span className="vdb-stat-val tier2">
-              {vdbData ? vdbData.documents.filter((d) => d.source_tier === "Tier 2").length : "—"}
+              {vdbData
+                ? vdbData.documents.filter((d) => d.source_tier === "Tier 2")
+                    .length
+                : "—"}
             </span>
             <span className="vdb-stat-label">Tier 2 Sources</span>
           </div>
           <div className="vdb-stat-card">
             <span className="vdb-stat-val tier3">
-              {vdbData ? vdbData.documents.filter((d) => d.source_tier === "Tier 3").length : "—"}
+              {vdbData
+                ? vdbData.documents.filter((d) => d.source_tier === "Tier 3")
+                    .length
+                : "—"}
             </span>
             <span className="vdb-stat-label">Tier 3 Sources</span>
           </div>
@@ -1570,16 +2122,37 @@ function HomeView({
           <div className="vdb-error-banner">
             <ShieldAlert size={14} />
             {vdbError}
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "#991b1b" }}>
-              Start the backend: <code style={{ background: "#fee2e2", padding: "1px 5px", borderRadius: 4 }}>python -m uvicorn Backend.main:app --port 8000</code>
+            <span
+              style={{ marginLeft: "auto", fontSize: 11, color: "#991b1b" }}
+            >
+              Start the backend:{" "}
+              <code
+                style={{
+                  background: "#fee2e2",
+                  padding: "1px 5px",
+                  borderRadius: 4,
+                }}
+              >
+                python -m uvicorn Backend.main:app --port 8000
+              </code>
             </span>
           </div>
         )}
 
         {/* Loading */}
         {vdbLoading && !vdbData && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 0", color: "#64748b", fontSize: 13 }}>
-            <Loader2 size={16} className="spin" /> Connecting to ChromaDB knowledge store...
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "20px 0",
+              color: "#64748b",
+              fontSize: 13,
+            }}
+          >
+            <Loader2 size={16} className="spin" /> Connecting to ChromaDB
+            knowledge store...
           </div>
         )}
 
@@ -1617,26 +2190,47 @@ function HomeView({
                       doc.source_tier === "Tier 1"
                         ? { bg: "#dcfce7", color: "#15803d", border: "#bbf7d0" }
                         : doc.source_tier === "Tier 2"
-                        ? { bg: "#dbeafe", color: "#1d4ed8", border: "#bfdbfe" }
-                        : { bg: "#fef3c7", color: "#92400e", border: "#fde68a" }
-                    const trustPct = Math.round((doc.source_trust_score ?? 0) * 100)
+                          ? {
+                              bg: "#dbeafe",
+                              color: "#1d4ed8",
+                              border: "#bfdbfe",
+                            }
+                          : {
+                              bg: "#fef3c7",
+                              color: "#92400e",
+                              border: "#fde68a",
+                            };
+                    const trustPct = Math.round(
+                      (doc.source_trust_score ?? 0) * 100,
+                    );
                     const trustColor =
-                      trustPct >= 90 ? "#10b981" : trustPct >= 75 ? "#2563eb" : "#f59e0b"
+                      trustPct >= 90
+                        ? "#10b981"
+                        : trustPct >= 75
+                          ? "#2563eb"
+                          : "#f59e0b";
                     return (
                       <tr key={doc.chunk_id} className="vdb-row">
                         <td>
                           <code className="vdb-chunk-id" title={doc.chunk_id}>
-                            {doc.chunk_id.length > 12 ? `${doc.chunk_id.slice(0, 12)}…` : doc.chunk_id}
+                            {doc.chunk_id.length > 12
+                              ? `${doc.chunk_id.slice(0, 12)}…`
+                              : doc.chunk_id}
                           </code>
                         </td>
                         <td>
-                          <span className="vdb-content-preview" title={doc.text_content}>
+                          <span
+                            className="vdb-content-preview"
+                            title={doc.text_content}
+                          >
                             {doc.text_content.length > 90
                               ? `${doc.text_content.slice(0, 90)}…`
                               : doc.text_content}
                           </span>
                         </td>
-                        <td><span className="vdb-publisher">{doc.publisher}</span></td>
+                        <td>
+                          <span className="vdb-publisher">{doc.publisher}</span>
+                        </td>
                         <td>
                           <span
                             className="vdb-tier-badge"
@@ -1654,37 +2248,56 @@ function HomeView({
                             <div className="vdb-trust-bar-bg">
                               <div
                                 className="vdb-trust-bar-fill"
-                                style={{ width: `${trustPct}%`, background: trustColor }}
+                                style={{
+                                  width: `${trustPct}%`,
+                                  background: trustColor,
+                                }}
                               />
                             </div>
-                            <span style={{ fontSize: 10.5, color: trustColor, fontWeight: 700 }}>
+                            <span
+                              style={{
+                                fontSize: 10.5,
+                                color: trustColor,
+                                fontWeight: 700,
+                              }}
+                            >
                               {trustPct}%
                             </span>
                           </div>
                         </td>
                         <td>
                           <div className="vdb-ticker-pills">
-                            {(doc.primary_ticker_mentions || []).length === 0 ? (
-                              <span style={{ color: "#94a3b8", fontSize: 11 }}>—</span>
+                            {(doc.primary_ticker_mentions || []).length ===
+                            0 ? (
+                              <span style={{ color: "#94a3b8", fontSize: 11 }}>
+                                —
+                              </span>
                             ) : (
-                              (doc.primary_ticker_mentions || []).slice(0, 4).map((t) => (
-                                <span key={t} className="vdb-ticker-pill">{t}</span>
-                              ))
+                              (doc.primary_ticker_mentions || [])
+                                .slice(0, 4)
+                                .map((t) => (
+                                  <span key={t} className="vdb-ticker-pill">
+                                    {t}
+                                  </span>
+                                ))
                             )}
                           </div>
                         </td>
                         <td>
                           <span className="vdb-timestamp">
                             {doc.created_at
-                              ? new Date(doc.created_at).toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
+                              ? new Date(doc.created_at).toLocaleTimeString(
+                                  [],
+                                  {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  },
+                                )
                               : "—"}
                           </span>
                         </td>
                       </tr>
-                    )
+                    );
                   })}
                 </tbody>
               </table>
@@ -1695,19 +2308,38 @@ function HomeView({
         {vdbData && vdbData.documents.length === 0 && !vdbLoading && (
           <div className="vdb-empty-state">
             <Database size={28} color="#94a3b8" />
-            <p>No documents yet. Click <strong>"Trigger Live Ingestion"</strong> to populate the VectorDB.</p>
+            <p>
+              No documents yet. Click <strong>"Trigger Live Ingestion"</strong>{" "}
+              to populate the VectorDB.
+            </p>
           </div>
         )}
 
         {/* Dedup Shield Log */}
         {vdbData && (
           <div className="vdb-dedup-section">
-            <button className="vdb-dedup-toggle" onClick={() => setDedupOpen((o) => !o)}>
-              <ShieldAlert size={14} color={vdbData.duplicates_blocked_count > 0 ? "#ef4444" : "#64748b"} />
+            <button
+              className="vdb-dedup-toggle"
+              onClick={() => setDedupOpen((o) => !o)}
+            >
+              <ShieldAlert
+                size={14}
+                color={
+                  vdbData.duplicates_blocked_count > 0 ? "#ef4444" : "#64748b"
+                }
+              />
               <span>
                 Semantic Dedup Shield Log —{" "}
-                <strong style={{ color: vdbData.duplicates_blocked_count > 0 ? "#ef4444" : "#10b981" }}>
-                  {vdbData.duplicates_blocked_count} duplicate{vdbData.duplicates_blocked_count !== 1 ? "s" : ""} blocked
+                <strong
+                  style={{
+                    color:
+                      vdbData.duplicates_blocked_count > 0
+                        ? "#ef4444"
+                        : "#10b981",
+                  }}
+                >
+                  {vdbData.duplicates_blocked_count} duplicate
+                  {vdbData.duplicates_blocked_count !== 1 ? "s" : ""} blocked
                 </strong>{" "}
                 this session
               </span>
@@ -1722,10 +2354,14 @@ function HomeView({
             </button>
             {dedupOpen && (
               <div className="vdb-dedup-log">
-                {(vdbData.dedup_audit?.recent_duplicates_blocked || []).length === 0 ? (
+                {(vdbData.dedup_audit?.recent_duplicates_blocked || [])
+                  .length === 0 ? (
                   <div className="vdb-dedup-empty">
                     <ShieldCheck size={16} color="#10b981" />
-                    <span>No duplicates blocked this session. All ingested news is unique.</span>
+                    <span>
+                      No duplicates blocked this session. All ingested news is
+                      unique.
+                    </span>
                   </div>
                 ) : (
                   (vdbData.dedup_audit?.recent_duplicates_blocked || []).map(
@@ -1734,7 +2370,8 @@ function HomeView({
                         <div className="vdb-dedup-item-header">
                           <span className="vdb-dedup-badge">BLOCKED</span>
                           <span className="vdb-dedup-score">
-                            Similarity: {(dup.similarity_score * 100).toFixed(1)}%
+                            Similarity:{" "}
+                            {(dup.similarity_score * 100).toFixed(1)}%
                           </span>
                           <span className="vdb-dedup-time">
                             {dup.timestamp
@@ -1748,12 +2385,18 @@ function HomeView({
                         </div>
                         <div className="vdb-dedup-texts">
                           <div>
-                            <span className="vdb-dedup-label">Incoming (blocked):</span>
+                            <span className="vdb-dedup-label">
+                              Incoming (blocked):
+                            </span>
                             <span className="vdb-dedup-text">{dup.text}</span>
                           </div>
                           <div>
-                            <span className="vdb-dedup-label">Matched existing:</span>
-                            <span className="vdb-dedup-text matched">{dup.matched_text}</span>
+                            <span className="vdb-dedup-label">
+                              Matched existing:
+                            </span>
+                            <span className="vdb-dedup-text matched">
+                              {dup.matched_text}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -1810,12 +2453,17 @@ function HomeView({
                   alignItems: "center",
                   gap: 6,
                 }}
-                title="Prompt 3: Execute vector nearest-neighbor semantic search & update user history"
+                title="Execute vector nearest-neighbor semantic search & update activity history"
               >
                 <Database size={13} color="#2563eb" />
-                <span>{isSearchingVector ? "Searching..." : "Vector Search"}</span>
+                <span>
+                  {isSearchingVector ? "Searching..." : "Vector Search"}
+                </span>
               </button>
-              <AppButton onClick={() => handleAnalyze(query)} disabled={!query.trim()}>
+              <AppButton
+                onClick={() => handleAnalyze(query)}
+                disabled={!query.trim()}
+              >
                 Analyze Impact <ArrowRight size={14} />
               </AppButton>
             </div>
@@ -1850,87 +2498,151 @@ function HomeView({
             </div>
 
             {/* Prompt 3: Retrieved Vector Context Chunks Box */}
-            {searchRetrievalResult && searchRetrievalResult.retrieved_news.length > 0 && (
-              <div
-                style={{
-                  marginTop: 14,
-                  background: "#f8fafc",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 10,
-                  padding: "12px 16px",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>
-                    🎯 Vector Retrieval: Top {searchRetrievalResult.retrieved_news.length} Relevant News Chunks
-                  </span>
-                  <span style={{ fontSize: 11, color: "#64748b" }}>
-                    Query: "{searchRetrievalResult.query_metadata.user_query}"
-                  </span>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {searchRetrievalResult.retrieved_news.map((item, i) => (
-                    <div
-                      key={item.chunk_id || i}
+            {searchRetrievalResult &&
+              searchRetrievalResult.retrieved_news.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 14,
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 10,
+                    padding: "12px 16px",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: 8,
+                    }}
+                  >
+                    <span
                       style={{
-                        background: "#ffffff",
-                        border: "1px solid #e2e8f0",
-                        borderRadius: 8,
-                        padding: "8px 12px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 3,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "#0f172a",
                       }}
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: "#1e293b" }}>{item.headline}</span>
-                        <span
+                      🎯 Vector Retrieval: Top{" "}
+                      {searchRetrievalResult.retrieved_news.length} Relevant
+                      News Chunks
+                    </span>
+                    <span style={{ fontSize: 11, color: "#64748b" }}>
+                      Query: "{searchRetrievalResult.query_metadata.user_query}"
+                    </span>
+                  </div>
+                  <div
+                    style={{ display: "flex", flexDirection: "column", gap: 8 }}
+                  >
+                    {searchRetrievalResult.retrieved_news.map((item, i) => (
+                      <div
+                        key={item.chunk_id || i}
+                        style={{
+                          background: "#ffffff",
+                          border: "1px solid #e2e8f0",
+                          borderRadius: 8,
+                          padding: "8px 12px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 3,
+                        }}
+                      >
+                        <div
                           style={{
-                            fontSize: 10.5,
-                            fontWeight: 700,
-                            color: item.similarity_score > 0.4 ? "#059669" : "#2563eb",
-                            background: item.similarity_score > 0.4 ? "#ecfdf5" : "#eff6ff",
-                            padding: "1px 6px",
-                            borderRadius: 10,
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
                           }}
                         >
-                          Sim: {(item.similarity_score * 100).toFixed(1)}%
-                        </span>
-                      </div>
-                      {item.snippet && (
-                        <span style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.4 }}>
-                          {item.snippet.length > 140 ? `${item.snippet.slice(0, 140)}…` : item.snippet}
-                        </span>
-                      )}
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
-                        <span style={{ fontSize: 10.5, color: "#64748b" }}>Source: {item.source}</span>
-                        {item.source_tier && (
-                          <span style={{ fontSize: 10, fontWeight: 600, color: "#4338ca", background: "#e0e7ff", padding: "1px 5px", borderRadius: 4 }}>
-                            {item.source_tier}
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "#1e293b",
+                            }}
+                          >
+                            {item.headline}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 10.5,
+                              fontWeight: 700,
+                              color:
+                                item.similarity_score > 0.4
+                                  ? "#059669"
+                                  : "#2563eb",
+                              background:
+                                item.similarity_score > 0.4
+                                  ? "#ecfdf5"
+                                  : "#eff6ff",
+                              padding: "1px 6px",
+                              borderRadius: 10,
+                            }}
+                          >
+                            Sim: {(item.similarity_score * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                        {item.snippet && (
+                          <span
+                            style={{
+                              fontSize: 11.5,
+                              color: "#475569",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {item.snippet.length > 140
+                              ? `${item.snippet.slice(0, 140)}…`
+                              : item.snippet}
                           </span>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => handleAnalyze(item.headline)}
+                        <div
                           style={{
-                            marginLeft: "auto",
-                            border: 0,
-                            background: "transparent",
-                            color: "#2563eb",
-                            fontSize: 11,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                            padding: 0,
+                            display: "flex",
+                            gap: 8,
+                            alignItems: "center",
+                            marginTop: 2,
                           }}
                         >
-                          Analyze Graph →
-                        </button>
+                          <span style={{ fontSize: 10.5, color: "#64748b" }}>
+                            Source: {item.source}
+                          </span>
+                          {item.source_tier && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 600,
+                                color: "#4338ca",
+                                background: "#e0e7ff",
+                                padding: "1px 5px",
+                                borderRadius: 4,
+                              }}
+                            >
+                              {item.source_tier}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleAnalyze(item.headline)}
+                            style={{
+                              marginLeft: "auto",
+                              border: 0,
+                              background: "transparent",
+                              color: "#2563eb",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              padding: 0,
+                            }}
+                          >
+                            Analyze Graph →
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
             {/* User Activity History Drawer / List */}
             {showHistoryModal && (
@@ -1944,19 +2656,46 @@ function HomeView({
                   boxShadow: "0 4px 12px rgba(15,23,42,0.06)",
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0f172a" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 8,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      color: "#0f172a",
+                    }}
+                  >
                     📜 Session User Activity History Log
                   </span>
                   <button
                     type="button"
                     onClick={() => setShowHistoryModal(false)}
-                    style={{ border: 0, background: "transparent", cursor: "pointer", fontSize: 12, color: "#64748b" }}
+                    style={{
+                      border: 0,
+                      background: "transparent",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      color: "#64748b",
+                    }}
                   >
                     Close ✕
                   </button>
                 </div>
-                <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                <div
+                  style={{
+                    maxHeight: 200,
+                    overflowY: "auto",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
                   {userActivityList.map((act) => (
                     <div
                       key={act.activity_id}
@@ -1971,11 +2710,30 @@ function HomeView({
                         fontSize: 11.5,
                       }}
                     >
-                      <span style={{ fontWeight: 600, color: "#1e293b" }}>{act.query_text}</span>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <span style={{ color: "#059669", fontWeight: 700, fontSize: 10.5 }}>{act.status}</span>
+                      <span style={{ fontWeight: 600, color: "#1e293b" }}>
+                        {act.query_text}
+                      </span>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "center",
+                        }}
+                      >
+                        <span
+                          style={{
+                            color: "#059669",
+                            fontWeight: 700,
+                            fontSize: 10.5,
+                          }}
+                        >
+                          {act.status}
+                        </span>
                         <span style={{ color: "#94a3b8", fontSize: 10.5 }}>
-                          {new Date(act.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          {new Date(act.timestamp).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
                         </span>
                       </div>
                     </div>
@@ -1983,13 +2741,15 @@ function HomeView({
                 </div>
               </div>
             )}
-
           </>
         ) : (
           <div className="scenario-grid">
             {SCENARIOS.map((item, index) => (
               <motion.button
-                whileHover={{ y: -3, boxShadow: "0 14px 28px rgba(20,38,68,.08)" }}
+                whileHover={{
+                  y: -3,
+                  boxShadow: "0 14px 28px rgba(20,38,68,.08)",
+                }}
                 className={`scenario ${item.tone}`}
                 key={item.title}
                 onClick={() => handleAnalyze(item.query)}
@@ -2025,9 +2785,12 @@ function HomeView({
             }}
           >
             <div>
-              <h2 style={{ margin: 0 }}>Live Ingestion Stream (Vector DB Chunks)</h2>
+              <h2 style={{ margin: 0 }}>
+                Live Ingestion Stream (Vector DB Chunks)
+              </h2>
               <span style={{ fontSize: 11.5, color: "#64748b" }}>
-                Click any real-world financial headline to immediately generate its propagation network graph
+                Click any real-world financial headline to immediately generate
+                its propagation network graph
               </span>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -2048,8 +2811,22 @@ function HomeView({
           </div>
 
           {/* Category Filter Pills */}
-          <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-            {["all", "Energy", "Macro", "Technology", "Financials", "Commodities"].map((cat) => (
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              marginBottom: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            {[
+              "all",
+              "Energy",
+              "Macro",
+              "Technology",
+              "Financials",
+              "Commodities",
+            ].map((cat) => (
               <button
                 key={cat}
                 type="button"
@@ -2081,17 +2858,21 @@ function HomeView({
                 onClick={() => handleAnalyze(h.title)}
                 onKeyDown={(e) => e.key === "Enter" && handleAnalyze(h.title)}
               >
-                <span className={`headline-cat cat-${h.category.toLowerCase()}`}>
+                <span
+                  className={`headline-cat cat-${h.category.toLowerCase()}`}
+                >
                   {h.category}
                 </span>
                 <span className="headline-title">{h.title}</span>
                 <span className="headline-source">{h.source}</span>
-                <span className="headline-score">{Math.round(h.relevance_score * 100)}% Match</span>
+                <span className="headline-score">
+                  {Math.round(h.relevance_score * 100)}% Match
+                </span>
                 <button
                   className="headline-btn"
                   onClick={(e) => {
-                    e.stopPropagation()
-                    handleAnalyze(h.title)
+                    e.stopPropagation();
+                    handleAnalyze(h.title);
                   }}
                 >
                   Analyze <ArrowRight size={12} />
@@ -2109,7 +2890,10 @@ function HomeView({
           <div className="scenario-grid">
             {SCENARIOS.map((item, index) => (
               <motion.button
-                whileHover={{ y: -3, boxShadow: "0 14px 28px rgba(20,38,68,.08)" }}
+                whileHover={{
+                  y: -3,
+                  boxShadow: "0 14px 28px rgba(20,38,68,.08)",
+                }}
                 className={`scenario ${item.tone}`}
                 key={item.title + "-quick"}
                 onClick={() => handleAnalyze(item.query)}
@@ -2137,12 +2921,13 @@ function HomeView({
           </div>
           <strong>Deterministic Graph + Real Market Data</strong>
           <p>
-            NetworkX 4-hop propagation engine fused with yfinance quantitative pricing validation.
+            NetworkX 4-hop propagation engine fused with yfinance quantitative
+            pricing validation.
           </p>
         </aside>
       </div>
     </PageMotion>
-  )
+  );
 }
 
 // ─── Graph View ───────────────────────────────────────────────────────────────
@@ -2153,39 +2938,76 @@ function GraphView({
   loading,
   error,
   query,
+  selectedSector,
+  onSelectSector,
   onSelectTickerForTimeSeries,
   onSelectEvidenceForInspector,
 }: {
-  navigate: (page: Page) => void
-  graphData: GraphResponse | null
-  loading: boolean
-  error: string | null
-  query: string
-  onSelectTickerForTimeSeries: (ticker: string) => void
-  onSelectEvidenceForInspector: (evidenceId?: string) => void
+  navigate: (page: Page) => void;
+  graphData: GraphResponse | null;
+  loading: boolean;
+  error: string | null;
+  query: string;
+  selectedSector: string | null;
+  onSelectSector: (sectorId: string | null) => void;
+  onSelectTickerForTimeSeries: (ticker: string) => void;
+  onSelectEvidenceForInspector: (evidenceId?: string) => void;
 }) {
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
-  const [activeHopFilter, setActiveHopFilter] = useState<number | "all">("all")
-  const [hopDropdownOpen, setHopDropdownOpen] = useState(false)
-  const [isExpanded, setIsExpanded] = useState(false)
-  const [copilotOpen, setCopilotOpen] = useState(false)
-  const [externalExpandTrigger, setExternalExpandTrigger] = useState<{ nodeId: string; action: "expand" | "collapse" } | null>(null)
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [activeHopFilter, setActiveHopFilter] = useState<number | "all">("all");
+  const [hopDropdownOpen, setHopDropdownOpen] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
+  const [externalExpandTrigger, setExternalExpandTrigger] = useState<{
+    nodeId: string;
+    action: "expand" | "collapse";
+  } | null>(null);
 
-  const displayNode = selectedNode ?? graphData?.root_event ?? (graphData?.nodes?.[0] ?? null)
+  // ── Sector Lens Filtering ──────────────────────────────────────────────────
+  const filterResult = useMemo(
+    () => filterGraphBySector(graphData, selectedSector),
+    [graphData, selectedSector],
+  );
 
-  if (loading) return <PageMotion><LoadingSpinner label="Running multi-model AI graph reasoning & NetworkX traversal..." /></PageMotion>
-  if (error) return <PageMotion><ErrorBanner message={error} /></PageMotion>
-  if (!graphData) return null
+  const sectorSummaries = useMemo(
+    () => getSectorSummaries(graphData),
+    [graphData],
+  );
 
-  const nodeEvidence = graphData.edges
+  const activeGraphData =
+    filterResult.isAffected && filterResult.filteredData
+      ? filterResult.filteredData
+      : graphData;
+
+  const displayNode =
+    selectedNode ??
+    activeGraphData?.root_event ??
+    activeGraphData?.nodes?.[0] ??
+    null;
+
+  if (loading)
+    return (
+      <PageMotion>
+        <LoadingSpinner label="Running multi-model AI graph reasoning & NetworkX traversal..." />
+      </PageMotion>
+    );
+  if (error)
+    return (
+      <PageMotion>
+        <ErrorBanner message={error} />
+      </PageMotion>
+    );
+  if (!graphData) return null;
+
+  const nodeEvidence = (activeGraphData?.edges ?? [])
     .filter((e) => e.source === displayNode?.id || e.target === displayNode?.id)
-    .map((e) => graphData.evidence[e.evidence_id])
-    .filter(Boolean)
+    .map((e) => (activeGraphData?.evidence ?? {})[e.evidence_id])
+    .filter(Boolean);
 
-  const isRoot = displayNode?.hop === 0
+  const isRoot = displayNode?.hop === 0;
 
   return (
-    <PageMotion>
+    <PageMotion noTransform={true}>
       <div className="panel-heading">
         <div>
           <span className="eyebrow-text">Impact Network</span>
@@ -2196,20 +3018,44 @@ function GraphView({
               : "Deterministic causal transmission network from primary shock to downstream assets."}
           </p>
         </div>
-        <div className="toolbar" style={{ position: "relative", display: "flex", gap: 8 }}>
+        <div
+          className="toolbar"
+          style={{
+            position: "relative",
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+          }}
+        >
           <button
             type="button"
             onClick={() => setHopDropdownOpen(!hopDropdownOpen)}
-            style={{ fontWeight: 600, color: "#1e293b", background: "#ffffff", border: "1px solid #dce5ee", borderRadius: 8, padding: "7px 12px", display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+            style={{
+              height: 38,
+              padding: "0 14px",
+              borderRadius: 8,
+              border: "1px solid #dce5ee",
+              background: "#ffffff",
+              color: "#1e293b",
+              fontSize: 12,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+            }}
           >
-            Hop: {activeHopFilter === "all" ? "All Hops (0–4)" : `Up to Hop ${activeHopFilter}`}{" "}
+            Hop:{" "}
+            {activeHopFilter === "all"
+              ? "All Hops (0–4)"
+              : `Up to Hop ${activeHopFilter}`}{" "}
             <ChevronDown size={13} />
           </button>
           {hopDropdownOpen && (
             <div
               style={{
                 position: "absolute",
-                top: 42,
+                top: 44,
                 right: 0,
                 background: "#ffffff",
                 border: "1px solid #dce5ee",
@@ -2233,12 +3079,13 @@ function GraphView({
                   key={String(item.id)}
                   type="button"
                   onClick={() => {
-                    setActiveHopFilter(item.id as any)
-                    setHopDropdownOpen(false)
+                    setActiveHopFilter(item.id as any);
+                    setHopDropdownOpen(false);
                   }}
                   style={{
                     border: 0,
-                    background: activeHopFilter === item.id ? "#eff6ff" : "transparent",
+                    background:
+                      activeHopFilter === item.id ? "#eff6ff" : "transparent",
                     color: activeHopFilter === item.id ? "#2563eb" : "#334155",
                     fontWeight: activeHopFilter === item.id ? 700 : 500,
                     fontSize: 11,
@@ -2252,7 +3099,9 @@ function GraphView({
                   }}
                 >
                   {item.label}
-                  {activeHopFilter === item.id && <Check size={12} color="#2563eb" />}
+                  {activeHopFilter === item.id && (
+                    <Check size={12} color="#2563eb" />
+                  )}
                 </button>
               ))}
             </div>
@@ -2262,16 +3111,18 @@ function GraphView({
             onClick={() => setCopilotOpen(!copilotOpen)}
             title="Toggle AI Financial Co-Pilot"
             style={{
-              background: copilotOpen ? "#eff6ff" : "#ffffff",
-              border: copilotOpen ? "1px solid #3b82f6" : "1px solid #dce5ee",
+              height: 38,
+              padding: "0 14px",
               borderRadius: 8,
-              padding: "7px 12px",
+              border: copilotOpen ? "1px solid #3b82f6" : "1px solid #dce5ee",
+              background: copilotOpen ? "#eff6ff" : "#ffffff",
+              color: copilotOpen ? "#2563eb" : "#1e293b",
+              fontSize: 12,
+              fontWeight: 600,
               display: "inline-flex",
               alignItems: "center",
               gap: 6,
               cursor: "pointer",
-              fontWeight: 600,
-              color: copilotOpen ? "#2563eb" : "#1e293b",
             }}
           >
             <Sparkles size={14} color="#8b5cf6" />
@@ -2279,358 +3130,616 @@ function GraphView({
           </button>
           <button
             type="button"
-            onClick={() => setSelectedNode(graphData.root_event || graphData.nodes[0])}
+            onClick={() =>
+              setSelectedNode(graphData.root_event || graphData.nodes[0])
+            }
             title="Focus Root Shock Trigger"
-            style={{ background: "#ffffff", border: "1px solid #dce5ee", borderRadius: 8, padding: "7px 12px", display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", fontWeight: 600, color: "#1e293b" }}
+            style={{
+              height: 38,
+              padding: "0 14px",
+              borderRadius: 8,
+              border: "1px solid #dce5ee",
+              background: "#ffffff",
+              color: "#1e293b",
+              fontSize: 12,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+            }}
           >
             <Sparkles size={14} color="#f59e0b" />
             <span>Root Event</span>
           </button>
-          <AppButton
-            variant="soft"
+          <button
+            type="button"
             onClick={() => navigate("path")}
+            title="Trace Linear Path"
+            style={{
+              height: 38,
+              padding: "0 14px",
+              borderRadius: 8,
+              border: "1px solid #bfdbfe",
+              background: "#eff6ff",
+              color: "#2563eb",
+              fontSize: 12,
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              cursor: "pointer",
+            }}
           >
             <span>Trace Linear Path</span>
             <ArrowRight size={13} />
-          </AppButton>
+          </button>
         </div>
       </div>
 
-      <div className={`graph-layout ${isExpanded ? "expanded" : ""}`}>
-        <section className="graph-card">
-          <NetworkGraph
-            nodes={graphData.nodes}
-            edges={graphData.edges}
-            evidence={graphData.evidence}
-            onNodeClick={setSelectedNode}
-            selectedId={displayNode?.id ?? null}
-            activeHopFilter={activeHopFilter}
-            onHopFilterChange={setActiveHopFilter}
-            onNavigateToTimeSeries={(ticker) => {
-              onSelectTickerForTimeSeries(ticker)
-              navigate("timeseries")
-            }}
-            onNavigateToEvidence={(evId) => {
-              onSelectEvidenceForInspector(evId)
-              navigate("evidence")
-            }}
-            isExpanded={isExpanded}
-            onToggleExpand={() => setIsExpanded(!isExpanded)}
-            externalExpandTrigger={externalExpandTrigger}
-          />
-        </section>
-
-        {!isExpanded && (
-          <aside className="details-card">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-              <span className="eyebrow-text" style={{ margin: 0 }}>
-                Financial Intelligence
-              </span>
-              {displayNode && (
+      {/* ── Sector Not Affected (Structural Insulation View) ─────────────── */}
+      {selectedSector && !filterResult.isAffected && filterResult.sector ? (
+        <SectorUnaffectedView
+          sector={filterResult.sector}
+          query={query}
+          onReset={() => {
+            setSelectedNode(null);
+            onSelectSector(null);
+          }}
+          onSelectSector={(secId) => {
+            setSelectedNode(null);
+            onSelectSector(secId);
+          }}
+          affectedSummaries={sectorSummaries}
+        />
+      ) : (
+        <>
+          {/* Active Sector Scope Pill */}
+          {selectedSector && filterResult.sector && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                background: filterResult.sector.bg,
+                border: `1.5px solid ${filterResult.sector.border}`,
+                borderRadius: 10,
+                padding: "8px 14px",
+                marginBottom: 14,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 16 }}>{filterResult.sector.icon}</span>
                 <span
                   style={{
-                    fontSize: 10,
+                    fontSize: 12,
                     fontWeight: 700,
-                    padding: "3px 8px",
-                    borderRadius: 12,
-                    background: isRoot ? "#fee2e2" : "#ede9fe",
-                    color: isRoot ? "#b91c1c" : "#6d28d9",
-                    letterSpacing: "0.03em",
+                    color: filterResult.sector.color,
                   }}
                 >
-                  {isRoot ? "ROOT TRIGGER" : `HOP ${displayNode.hop}`}
+                  Isolated Sector Scope: {filterResult.sector.name}
                 </span>
-              )}
+                <span style={{ fontSize: 11, color: "#64748b" }}>
+                  — Displaying {filterResult.nodeCount} correlated nodes &
+                  causal shock links grounded in "{graphData.root_event?.label}
+                  ".
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onSelectSector(null)}
+                style={{
+                  background: "#ffffff",
+                  border: `1px solid ${filterResult.sector.border}`,
+                  color: filterResult.sector.color,
+                  borderRadius: 6,
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                Clear Scope (View All Sectors)
+              </button>
             </div>
+          )}
 
-            {displayNode ? (
-              <>
-                <div className="detail-title" style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 10 }}>
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 9,
-                      background: isRoot ? "#fffbeb" : "#f1f5f9",
-                      color: isRoot ? "#f59e0b" : "#475569",
-                      display: "grid",
-                      placeItems: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {isRoot ? <CircleDollarSign size={18} /> : <Building2 size={18} />}
-                  </div>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#0f172a" }}>
-                      {displayNode.label}
-                    </h2>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                      {(() => {
-                        const sec = classifyNodeSector(displayNode)
-                        const secCfg = SECTOR_CONFIGS[sec]
-                        return secCfg ? (
-                          <span
-                            style={{
-                              fontSize: 9.5,
-                              fontWeight: 700,
-                              color: secCfg.color,
-                              background: secCfg.bgColor,
-                              border: `1px solid ${secCfg.borderColor}`,
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                            }}
-                          >
-                            {secCfg.shortName}
-                          </span>
-                        ) : null
-                      })()}
-                      {displayNode.ticker && (
-                        <span style={{ fontSize: 9.5, fontWeight: 700, color: "#2563eb", background: "#eff6ff", padding: "2px 6px", borderRadius: 4 }}>
-                          ${displayNode.ticker}
-                        </span>
-                      )}
-                      <span style={{ fontSize: 10.5, color: "#64748b" }}>{displayNode.category}</span>
-                    </div>
-                  </div>
-                </div>
+          <div className={`graph-layout ${isExpanded ? "expanded" : ""}`}>
+            <section className="graph-card">
+              <NetworkGraph
+                nodes={(activeGraphData ?? graphData).nodes}
+                edges={(activeGraphData ?? graphData).edges}
+                evidence={(activeGraphData ?? graphData).evidence}
+                onNodeClick={setSelectedNode}
+                selectedId={displayNode?.id ?? null}
+                activeHopFilter={activeHopFilter}
+                onHopFilterChange={setActiveHopFilter}
+                onNavigateToTimeSeries={(ticker) => {
+                  onSelectTickerForTimeSeries(ticker);
+                  navigate("timeseries");
+                }}
+                onNavigateToEvidence={(evId) => {
+                  onSelectEvidenceForInspector(evId);
+                  navigate("evidence");
+                }}
+                isExpanded={isExpanded}
+                onToggleExpand={() => setIsExpanded(!isExpanded)}
+                externalExpandTrigger={externalExpandTrigger}
+              />
+            </section>
 
+            {!isExpanded && (
+              <aside className="details-card">
                 <div
                   style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 8,
-                    margin: "12px 0",
-                    background: "#f8fafc",
-                    padding: 10,
-                    borderRadius: 8,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: 10,
                   }}
                 >
-                  <div>
-                    <span style={{ fontSize: 10, color: "#64748b", display: "block" }}>Impact Score</span>
-                    <strong style={{ fontSize: 13, color: "#0f172a" }}>
-                      {Math.round(displayNode.impact_score * 100)}%
-                    </strong>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: 10, color: "#64748b", display: "block" }}>Direction</span>
-                    <strong
+                  <span className="eyebrow-text" style={{ margin: 0 }}>
+                    Financial Intelligence
+                  </span>
+                  {displayNode && (
+                    <span
                       style={{
-                        fontSize: 13,
-                        color:
-                          displayNode.sentiment === "positive"
-                            ? "#16a34a"
-                            : displayNode.sentiment === "negative"
-                              ? "#dc2626"
-                              : "#475569",
-                        textTransform: "capitalize",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: "3px 8px",
+                        borderRadius: 12,
+                        background: isRoot ? "#fee2e2" : "#ede9fe",
+                        color: isRoot ? "#b91c1c" : "#6d28d9",
+                        letterSpacing: "0.03em",
                       }}
                     >
-                      {displayNode.sentiment}
-                    </strong>
-                  </div>
+                      {isRoot ? "ROOT TRIGGER" : `HOP ${displayNode.hop}`}
+                    </span>
+                  )}
                 </div>
 
-                <p style={{ fontSize: 12, color: "#475569", lineHeight: 1.55, margin: "0 0 16px" }}>
-                  {displayNode.description}
-                </p>
-
-                {/* Causal Transmission Links */}
-                <h3 style={{ fontSize: 13, margin: "0 0 8px" }}>Causal Transmission Links</h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
-                  {graphData.edges
-                    .filter((e) => e.source === displayNode.id || e.target === displayNode.id)
-                    .slice(0, 6)
-                    .map((e) => {
-                      const isOutgoing = e.source === displayNode.id
-                      const neighborId = isOutgoing ? e.target : e.source
-                      const neighbor = graphData.nodes.find((n) => n.id === neighborId)
-                      return (
-                        <button
-                          key={`${e.source}-${e.target}`}
-                          type="button"
-                          className="relationship-chip"
-                          onClick={() => {
-                            if (neighbor) {
-                              setSelectedNode(neighbor)
-                              setExternalExpandTrigger({ nodeId: neighbor.id, action: "expand" })
-                              setTimeout(() => setExternalExpandTrigger(null), 100)
-                            }
+                {displayNode ? (
+                  <>
+                    <div
+                      className="detail-title"
+                      style={{
+                        marginTop: 0,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 9,
+                          background: isRoot ? "#fffbeb" : "#f1f5f9",
+                          color: isRoot ? "#f59e0b" : "#475569",
+                          display: "grid",
+                          placeItems: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {isRoot ? (
+                          <CircleDollarSign size={18} />
+                        ) : (
+                          <Building2 size={18} />
+                        )}
+                      </div>
+                      <div>
+                        <h2
+                          style={{
+                            margin: 0,
+                            fontSize: 16,
+                            fontWeight: 700,
+                            color: "#0f172a",
                           }}
-                          title={`Focus on ${neighbor?.label || neighborId}`}
+                        >
+                          {displayNode.label}
+                        </h2>
+                        <div
                           style={{
                             display: "flex",
                             alignItems: "center",
-                            justifyContent: "space-between",
-                            padding: "6px 10px",
-                            borderRadius: 6,
-                            background: "#f8fafc",
-                            border: "1px solid #e2e8f0",
-                            cursor: "pointer",
-                            textAlign: "left",
+                            gap: 6,
+                            marginTop: 4,
                           }}
                         >
-                          <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-                            <GitBranch size={12} color={isOutgoing ? "#2563eb" : "#8b5cf6"} />
-                            <span>
-                              {isOutgoing ? "Spills to: " : "Driven by: "}
-                              <strong>{neighbor?.label || neighborId}</strong>
+                          {(() => {
+                            const sec = classifyNodeSector(displayNode);
+                            const secCfg = SECTOR_CONFIGS[sec];
+                            return secCfg ? (
+                              <span
+                                style={{
+                                  fontSize: 9.5,
+                                  fontWeight: 700,
+                                  color: secCfg.color,
+                                  background: secCfg.bgColor,
+                                  border: `1px solid ${secCfg.borderColor}`,
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                {secCfg.shortName}
+                              </span>
+                            ) : null;
+                          })()}
+                          {displayNode.ticker && (
+                            <span
+                              style={{
+                                fontSize: 9.5,
+                                fontWeight: 700,
+                                color: "#2563eb",
+                                background: "#eff6ff",
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                              }}
+                            >
+                              ${displayNode.ticker}
                             </span>
+                          )}
+                          <span style={{ fontSize: 10.5, color: "#64748b" }}>
+                            {displayNode.category}
                           </span>
-                          <span
-                            style={{
-                              fontSize: 9.5,
-                              fontWeight: 700,
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                              background: e.type === "observed" ? "#e0e7ff" : "#f3e8ff",
-                              color: e.type === "observed" ? "#4338ca" : "#7e22ce",
-                            }}
-                          >
-                            {e.relationship}
-                          </span>
-                        </button>
-                      )
-                    })}
-                </div>
+                        </div>
+                      </div>
+                    </div>
 
-                {/* Mitigating Factors & Uncertainty */}
-                <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 3 }}>
-                    Mitigating Factors & Uncertainty
-                  </div>
-                  <p style={{ margin: 0, fontSize: 10.5, color: "#475569", lineHeight: 1.45 }}>
-                    {displayNode.hop <= 1
-                      ? "Direct shock transmission grounded in spot pricing; substitution elasticity may dampen downstream pass-through over 60–90 trading sessions."
-                      : "Downstream transmission subject to policy intervention, macro hedging liquidity, and supply chain inventory buffering."}
-                  </p>
-                </div>
-
-                {/* Quick actions for selected node */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setExternalExpandTrigger({ nodeId: displayNode.id, action: "expand" })
-                      setTimeout(() => setExternalExpandTrigger(null), 100)
-                    }}
-                    style={{
-                      padding: "7px 12px",
-                      borderRadius: 8,
-                      background: "#eff6ff",
-                      border: "1px solid #bfdbfe",
-                      color: "#1d4ed8",
-                      fontSize: 11.5,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 6,
-                    }}
-                  >
-                    <GitBranch size={13} color="#2563eb" />
-                    <span>Expand Node Connections</span>
-                  </button>
-                  {displayNode.ticker && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectTickerForTimeSeries(displayNode.ticker!)
-                        navigate("timeseries")
-                      }}
+                    <div
                       style={{
-                        padding: "7px 12px",
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 8,
+                        margin: "12px 0",
+                        background: "#f8fafc",
+                        padding: 10,
                         borderRadius: 8,
-                        background: "#f0f4ff",
-                        border: "1px solid #c7d7fe",
-                        color: "#2563eb",
-                        fontSize: 11.5,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 6,
                       }}
                     >
-                      <LineChart size={13} />
-                      <span>Analyze ${displayNode.ticker} in Time-Series</span>
-                    </button>
-                  )}
+                      <div>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "#64748b",
+                            display: "block",
+                          }}
+                        >
+                          Impact Score
+                        </span>
+                        <strong style={{ fontSize: 13, color: "#0f172a" }}>
+                          {Math.round(displayNode.impact_score * 100)}%
+                        </strong>
+                      </div>
+                      <div>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "#64748b",
+                            display: "block",
+                          }}
+                        >
+                          Direction
+                        </span>
+                        <strong
+                          style={{
+                            fontSize: 13,
+                            color:
+                              displayNode.sentiment === "positive"
+                                ? "#16a34a"
+                                : displayNode.sentiment === "negative"
+                                  ? "#dc2626"
+                                  : "#475569",
+                            textTransform: "capitalize",
+                          }}
+                        >
+                          {displayNode.sentiment}
+                        </strong>
+                      </div>
+                    </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setCopilotOpen(true)}
-                    style={{
-                      padding: "7px 12px",
-                      borderRadius: 8,
-                      background: "#faf5ff",
-                      border: "1px solid #e9d5ff",
-                      color: "#7e22ce",
-                      fontSize: 11.5,
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: 6,
-                    }}
-                  >
-                    <Sparkles size={13} color="#9333ea" />
-                    <span>Ask Co-Pilot about {displayNode.label}</span>
-                  </button>
-
-                  {nodeEvidence[0] && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectEvidenceForInspector(nodeEvidence[0].id)
-                        navigate("evidence")
-                      }}
+                    <p
                       style={{
-                        padding: "7px 12px",
-                        borderRadius: 8,
+                        fontSize: 12,
+                        color: "#475569",
+                        lineHeight: 1.55,
+                        margin: "0 0 16px",
+                      }}
+                    >
+                      {displayNode.description}
+                    </p>
+
+                    {/* Causal Transmission Links */}
+                    <h3 style={{ fontSize: 13, margin: "0 0 8px" }}>
+                      Causal Transmission Links
+                    </h3>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                        marginBottom: 16,
+                      }}
+                    >
+                      {graphData.edges
+                        .filter(
+                          (e) =>
+                            e.source === displayNode.id ||
+                            e.target === displayNode.id,
+                        )
+                        .slice(0, 6)
+                        .map((e) => {
+                          const isOutgoing = e.source === displayNode.id;
+                          const neighborId = isOutgoing ? e.target : e.source;
+                          const neighbor = graphData.nodes.find(
+                            (n) => n.id === neighborId,
+                          );
+                          return (
+                            <button
+                              key={`${e.source}-${e.target}`}
+                              type="button"
+                              className="relationship-chip"
+                              onClick={() => {
+                                if (neighbor) {
+                                  setSelectedNode(neighbor);
+                                  setExternalExpandTrigger({
+                                    nodeId: neighbor.id,
+                                    action: "expand",
+                                  });
+                                  setTimeout(
+                                    () => setExternalExpandTrigger(null),
+                                    100,
+                                  );
+                                }
+                              }}
+                              title={`Focus on ${neighbor?.label || neighborId}`}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                padding: "6px 10px",
+                                borderRadius: 6,
+                                background: "#f8fafc",
+                                border: "1px solid #e2e8f0",
+                                cursor: "pointer",
+                                textAlign: "left",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 6,
+                                  fontSize: 11,
+                                }}
+                              >
+                                <GitBranch
+                                  size={12}
+                                  color={isOutgoing ? "#2563eb" : "#8b5cf6"}
+                                />
+                                <span>
+                                  {isOutgoing ? "Spills to: " : "Driven by: "}
+                                  <strong>
+                                    {neighbor?.label || neighborId}
+                                  </strong>
+                                </span>
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 9.5,
+                                  fontWeight: 700,
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  background:
+                                    e.type === "observed"
+                                      ? "#e0e7ff"
+                                      : "#f3e8ff",
+                                  color:
+                                    e.type === "observed"
+                                      ? "#4338ca"
+                                      : "#7e22ce",
+                                }}
+                              >
+                                {e.relationship}
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+
+                    {/* Mitigating Factors & Uncertainty */}
+                    <div
+                      style={{
                         background: "#f8fafc",
                         border: "1px solid #e2e8f0",
-                        color: "#334155",
-                        fontSize: 11.5,
-                        fontWeight: 600,
-                        cursor: "pointer",
+                        borderRadius: 8,
+                        padding: "8px 10px",
+                        marginBottom: 14,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          color: "#64748b",
+                          textTransform: "uppercase",
+                          marginBottom: 3,
+                        }}
+                      >
+                        Mitigating Factors & Uncertainty
+                      </div>
+                      <p
+                        style={{
+                          margin: 0,
+                          fontSize: 10.5,
+                          color: "#475569",
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        {displayNode.hop <= 1
+                          ? "Direct shock transmission grounded in spot pricing; substitution elasticity may dampen downstream pass-through over 60–90 trading sessions."
+                          : "Downstream transmission subject to policy intervention, macro hedging liquidity, and supply chain inventory buffering."}
+                      </p>
+                    </div>
+
+                    {/* Quick actions for selected node */}
+                    <div
+                      style={{
                         display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
+                        flexDirection: "column",
                         gap: 6,
                       }}
                     >
-                      <ShieldCheck size={13} color="#16a34a" />
-                      <span>Inspect Supporting Evidence</span>
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : (
-              <p style={{ color: "#8a98aa", fontSize: 12, marginTop: 16 }}>
-                Click any node in the graph to inspect propagation details.
-              </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExternalExpandTrigger({
+                            nodeId: displayNode.id,
+                            action: "expand",
+                          });
+                          setTimeout(() => setExternalExpandTrigger(null), 100);
+                        }}
+                        style={{
+                          padding: "7px 12px",
+                          borderRadius: 8,
+                          background: "#eff6ff",
+                          border: "1px solid #bfdbfe",
+                          color: "#1d4ed8",
+                          fontSize: 11.5,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <GitBranch size={13} color="#2563eb" />
+                        <span>Expand Node Connections</span>
+                      </button>
+                      {displayNode.ticker && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectTickerForTimeSeries(displayNode.ticker!);
+                            navigate("timeseries");
+                          }}
+                          style={{
+                            padding: "7px 12px",
+                            borderRadius: 8,
+                            background: "#f0f4ff",
+                            border: "1px solid #c7d7fe",
+                            color: "#2563eb",
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <LineChart size={13} />
+                          <span>
+                            Analyze ${displayNode.ticker} in Time-Series
+                          </span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setCopilotOpen(true)}
+                        style={{
+                          padding: "7px 12px",
+                          borderRadius: 8,
+                          background: "#faf5ff",
+                          border: "1px solid #e9d5ff",
+                          color: "#7e22ce",
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                        }}
+                      >
+                        <Sparkles size={13} color="#9333ea" />
+                        <span>Ask Co-Pilot about {displayNode.label}</span>
+                      </button>
+
+                      {nodeEvidence[0] && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectEvidenceForInspector(nodeEvidence[0].id);
+                            navigate("evidence");
+                          }}
+                          style={{
+                            padding: "7px 12px",
+                            borderRadius: 8,
+                            background: "#f8fafc",
+                            border: "1px solid #e2e8f0",
+                            color: "#334155",
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <ShieldCheck size={13} color="#16a34a" />
+                          <span>Inspect Supporting Evidence</span>
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p style={{ color: "#8a98aa", fontSize: 12, marginTop: 16 }}>
+                    Click any node in the graph to inspect propagation details.
+                  </p>
+                )}
+              </aside>
             )}
-          </aside>
-        )}
+          </div>
+        </>
+      )}
+
+      {/* ── Appended Target Sector Impact Lens Deck (Below Graph Visualization) ── */}
+      <div
+        style={{
+          marginTop: 24,
+          borderTop: "1px solid #e2e8f0",
+          paddingTop: 20,
+        }}
+      >
+        <SectorLensDeck
+          graphData={graphData}
+          activeSectorId={selectedSector}
+          onSelectSector={(secId) => {
+            setSelectedNode(null);
+            onSelectSector(secId);
+            window.scrollTo({ top: 100, behavior: "smooth" });
+          }}
+        />
       </div>
 
       <AICoPilot
-        graphData={graphData}
+        graphData={activeGraphData ?? graphData}
         selectedNode={displayNode}
         query={query}
         isOpen={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         onNavigateToNode={(nodeId) => {
-          const target = graphData.nodes.find((n) => n.id === nodeId)
-          if (target) setSelectedNode(target)
+          const target = graphData.nodes.find((n) => n.id === nodeId);
+          if (target) setSelectedNode(target);
         }}
         onNavigateToPage={navigate}
       />
     </PageMotion>
-  )
+  );
 }
 
 // ─── Propagation Path View ────────────────────────────────────────────────────
@@ -2642,38 +3751,108 @@ function PathView({
   navigate,
   onSelectNode,
   onSelectTicker,
+  selectedSector,
+  onSelectSector,
 }: {
-  graphData: GraphResponse | null
-  loading: boolean
-  error: string | null
-  navigate: (page: Page) => void
-  onSelectNode: (nodeId: string) => void
-  onSelectTicker: (ticker: string) => void
+  graphData: GraphResponse | null;
+  loading: boolean;
+  error: string | null;
+  navigate: (page: Page) => void;
+  onSelectNode: (nodeId: string) => void;
+  onSelectTicker: (ticker: string) => void;
+  selectedSector?: string | null;
+  onSelectSector?: (secId: string | null) => void;
 }) {
-  const [activePathBranch, setActivePathBranch] = useState<"primary" | "contagion" | "macro">("primary")
-  const [copilotOpen, setCopilotOpen] = useState(false)
+  const [activePathBranch, setActivePathBranch] = useState<
+    "primary" | "contagion" | "macro"
+  >("primary");
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
-  if (loading) return <PageMotion><LoadingSpinner label="Loading propagation path chain..." /></PageMotion>
-  if (error) return <PageMotion><ErrorBanner message={error} /></PageMotion>
+  const activeSectorDef = selectedSector
+    ? SECTOR_DEFINITIONS.find((s) => s.id === selectedSector)
+    : null;
+
+  if (loading)
+    return (
+      <PageMotion>
+        <LoadingSpinner label="Loading propagation path chain..." />
+      </PageMotion>
+    );
+  if (error)
+    return (
+      <PageMotion>
+        <ErrorBanner message={error} />
+      </PageMotion>
+    );
   if (!graphData) {
     return (
       <PageMotion>
         <p>Run an analysis from the Home page first.</p>
         <AppButton onClick={() => navigate("home")}>Go to Home</AppButton>
       </PageMotion>
-    )
+    );
   }
 
-  const { hop_chain, affected_assets } = graphData
+  const { hop_chain, affected_assets } = graphData;
 
   return (
-    <PageMotion>
+    <PageMotion noTransform={true}>
+      {activeSectorDef && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            background: activeSectorDef.bg,
+            border: `1.5px solid ${activeSectorDef.border}`,
+            borderRadius: 10,
+            padding: "8px 14px",
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 16 }}>{activeSectorDef.icon}</span>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: activeSectorDef.color,
+              }}
+            >
+              Target Sector Scope: {activeSectorDef.name}
+            </span>
+            <span style={{ fontSize: 11, color: "#64748b" }}>
+              — Causal transmission sequence focused on{" "}
+              {activeSectorDef.shortName} assets and market spillovers.
+            </span>
+          </div>
+          {onSelectSector && (
+            <button
+              type="button"
+              onClick={() => onSelectSector(null)}
+              style={{
+                background: "#ffffff",
+                border: `1px solid ${activeSectorDef.border}`,
+                color: activeSectorDef.color,
+                borderRadius: 6,
+                padding: "3px 9px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Clear Scope
+            </button>
+          )}
+        </div>
+      )}
       <div className="panel-heading">
         <div>
           <span className="eyebrow-text">Propagation Path</span>
           <h1>Deterministic Causal Transmission Chain</h1>
           <p>
-            Follow the sequential transmission chain from the primary event trigger across sectors to affected assets.
+            Follow the sequential transmission chain from the primary event
+            trigger across sectors to affected assets.
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -2734,8 +3913,8 @@ function PathView({
             animate={{ x: 0, opacity: 1 }}
             transition={{ delay: index * 0.08 }}
             onClick={() => {
-              onSelectNode(hop.node_id)
-              navigate("graph")
+              onSelectNode(hop.node_id);
+              navigate("graph");
             }}
             style={{ cursor: "pointer" }}
             title="Click to view and center this entity in Graph Visualizer"
@@ -2754,9 +3933,18 @@ function PathView({
       <div className="path-layout">
         {/* Timeline Sequence */}
         <section className="sequence-card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 14,
+            }}
+          >
             <h2 style={{ margin: 0 }}>Detailed Hop Transmission Sequence</h2>
-            <span style={{ fontSize: 11, color: "#64748b" }}>Click step to inspect in Graph</span>
+            <span style={{ fontSize: 11, color: "#64748b" }}>
+              Click step to inspect in Graph
+            </span>
           </div>
 
           <div className="timeline">
@@ -2768,18 +3956,22 @@ function PathView({
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.15 + index * 0.07 }}
                 onClick={() => {
-                  onSelectNode(hop.node_id)
-                  navigate("graph")
+                  onSelectNode(hop.node_id);
+                  navigate("graph");
                 }}
                 style={{ cursor: "pointer" }}
               >
                 <i className={`dot dot-${index % 5}`} />
                 <div>
-                  <small>Hop {hop.hop} · {hop.category}</small>
+                  <small>
+                    Hop {hop.hop} · {hop.category}
+                  </small>
                   <strong>{hop.label}</strong>
                   <p>{hop.description}</p>
                 </div>
-                <span>{hop.hop === 0 ? "Observed Trigger" : "Model Inferred"}</span>
+                <span>
+                  {hop.hop === 0 ? "Observed Trigger" : "Model Inferred"}
+                </span>
               </motion.div>
             ))}
           </div>
@@ -2801,10 +3993,16 @@ function PathView({
                 <span>
                   <strong>{asset.ticker}</strong>
                   <br />
-                  <small style={{ color: "#8a98aa", fontSize: 10 }}>{asset.name}</small>
+                  <small style={{ color: "#8a98aa", fontSize: 10 }}>
+                    {asset.name}
+                  </small>
                 </span>
                 <span>{asset.type}</span>
-                <span className={asset.direction === "positive" ? "positive" : "negative"}>
+                <span
+                  className={
+                    asset.direction === "positive" ? "positive" : "negative"
+                  }
+                >
                   {asset.impact_delta}
                 </span>
                 <span>{asset.confidence}%</span>
@@ -2812,8 +4010,8 @@ function PathView({
                   <button
                     type="button"
                     onClick={() => {
-                      onSelectTicker(asset.ticker)
-                      navigate("timeseries")
+                      onSelectTicker(asset.ticker);
+                      navigate("timeseries");
                     }}
                     style={{
                       border: 0,
@@ -2831,8 +4029,8 @@ function PathView({
                   <button
                     type="button"
                     onClick={() => {
-                      onSelectNode(asset.ticker)
-                      navigate("graph")
+                      onSelectNode(asset.ticker);
+                      navigate("graph");
                     }}
                     style={{
                       border: 0,
@@ -2854,9 +4052,12 @@ function PathView({
           <div className="asset-note">
             <Box size={32} />
             <div>
-              <strong>Multiple transmission paths, unified analytical proof.</strong>
+              <strong>
+                Multiple transmission paths, unified analytical proof.
+              </strong>
               <p>
-                Quantitative metrics verified through yfinance correlation against benchmark S&P 500.
+                Quantitative metrics verified through yfinance correlation
+                against benchmark S&P 500.
               </p>
             </div>
           </div>
@@ -2870,13 +4071,13 @@ function PathView({
         isOpen={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         onNavigateToNode={(nodeId) => {
-          onSelectNode(nodeId)
-          navigate("graph")
+          onSelectNode(nodeId);
+          navigate("graph");
         }}
         onNavigateToPage={navigate}
       />
     </PageMotion>
-  )
+  );
 }
 
 // ─── Time-Series View ─────────────────────────────────────────────────────────
@@ -2886,42 +4087,68 @@ function TimeSeriesView({
   graphLoading,
   selectedTickerProp,
   onSelectTicker,
+  selectedSector,
+  onSelectSector,
 }: {
-  graphData: GraphResponse | null
-  graphLoading: boolean
-  selectedTickerProp: string
-  onSelectTicker: (ticker: string) => void
+  graphData: GraphResponse | null;
+  graphLoading: boolean;
+  selectedTickerProp: string;
+  onSelectTicker: (ticker: string) => void;
+  selectedSector?: string | null;
+  onSelectSector?: (secId: string | null) => void;
 }) {
-  const [selectedPeriod, setSelectedPeriod] = useState<string>("6mo")
-  const [activeSubtab, setActiveSubtab] = useState<"price" | "correlation" | "backtest">("price")
-  const [searchTicker, setSearchTicker] = useState<string>("")
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
+  const [selectedPeriod, setSelectedPeriod] = useState<string>("6mo");
+  const [activeSubtab, setActiveSubtab] = useState<
+    "price" | "correlation" | "backtest"
+  >("price");
+  const [searchTicker, setSearchTicker] = useState<string>("");
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  const activeSectorDef = selectedSector
+    ? SECTOR_DEFINITIONS.find((s) => s.id === selectedSector)
+    : null;
+
+  // Auto-switch to sector's primary ticker if sector is active and prop is default SPY
+  const hasInitializedSectorTicker = useRef(false);
+  useEffect(() => {
+    if (
+      activeSectorDef &&
+      activeSectorDef.defaultTicker &&
+      !hasInitializedSectorTicker.current
+    ) {
+      hasInitializedSectorTicker.current = true;
+      onSelectTicker(activeSectorDef.defaultTicker);
+    }
+  }, [activeSectorDef, onSelectTicker]);
 
   // Collect available tickers from graph
   const availableTickers = useMemo(() => {
-    const list: string[] = []
-    if (graphData?.root_event?.ticker && !list.includes(graphData.root_event.ticker)) {
-      list.push(graphData.root_event.ticker)
+    const list: string[] = [];
+    if (
+      graphData?.root_event?.ticker &&
+      !list.includes(graphData.root_event.ticker)
+    ) {
+      list.push(graphData.root_event.ticker);
     }
     if (graphData?.affected_assets) {
       graphData.affected_assets.forEach((a) => {
-        if (a.ticker && !list.includes(a.ticker)) list.push(a.ticker)
-      })
+        if (a.ticker && !list.includes(a.ticker)) list.push(a.ticker);
+      });
     }
     if (graphData?.nodes) {
       graphData.nodes.forEach((n) => {
-        if (n.ticker && !list.includes(n.ticker)) list.push(n.ticker)
-      })
+        if (n.ticker && !list.includes(n.ticker)) list.push(n.ticker);
+      });
     }
     // Default fallback popular tickers
-    if (!list.includes("SPY")) list.push("SPY")
-    if (!list.includes("CL=F")) list.push("CL=F")
-    if (!list.includes("XLE")) list.push("XLE")
-    if (!list.includes("TSLA")) list.push("TSLA")
-    return list
-  }, [graphData])
+    if (!list.includes("SPY")) list.push("SPY");
+    if (!list.includes("CL=F")) list.push("CL=F");
+    if (!list.includes("XLE")) list.push("XLE");
+    if (!list.includes("TSLA")) list.push("TSLA");
+    return list;
+  }, [graphData]);
 
-  const currentTicker = selectedTickerProp || availableTickers[0] || "SPY"
+  const currentTicker = selectedTickerProp || availableTickers[0] || "SPY";
 
   // Fetch market validation data with dynamic period
   const {
@@ -2931,86 +4158,174 @@ function TimeSeriesView({
   } = useAsync(
     () => fetchMarketData(currentTicker, selectedPeriod),
     [currentTicker, selectedPeriod],
-  )
+  );
 
   const handleCustomTickerSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!searchTicker.trim()) return
-    onSelectTicker(searchTicker.trim().toUpperCase())
-    setSearchTicker("")
-  }
+    e.preventDefault();
+    if (!searchTicker.trim()) return;
+    onSelectTicker(searchTicker.trim().toUpperCase());
+    setSearchTicker("");
+  };
 
   if (loading || graphLoading) {
-    return <PageMotion><LoadingSpinner label={`Fetching live market data and computing Pearson correlation for ${currentTicker}...`} /></PageMotion>
+    return (
+      <PageMotion>
+        <LoadingSpinner
+          label={`Fetching live market data and computing Pearson correlation for ${currentTicker}...`}
+        />
+      </PageMotion>
+    );
   }
-  if (error) return <PageMotion><ErrorBanner message={error} /></PageMotion>
-  if (!tsData) return null
+  if (error)
+    return (
+      <PageMotion>
+        <ErrorBanner message={error} />
+      </PageMotion>
+    );
+  if (!tsData) return null;
 
-  const prices: PricePoint[] = tsData.historical_price_series || []
-  const benchmarks: BenchmarkPoint[] = tsData.benchmark_index_series || []
-  const benchmarkLabel = benchmarks[0]?.label || "S&P 500"
+  const prices: PricePoint[] = tsData.historical_price_series || [];
+  const benchmarks: BenchmarkPoint[] = tsData.benchmark_index_series || [];
+  const benchmarkLabel = benchmarks[0]?.label || "S&P 500";
 
-  const minP = prices.length > 0 ? Math.min(...prices.map((p) => p.close)) : 0
-  const maxP = prices.length > 0 ? Math.max(...prices.map((p) => p.close)) : 100
-  const minB = benchmarks.length > 0 ? Math.min(...benchmarks.map((b) => b.close)) : 0
-  const maxB = benchmarks.length > 0 ? Math.max(...benchmarks.map((b) => b.close)) : 100
+  const minP = prices.length > 0 ? Math.min(...prices.map((p) => p.close)) : 0;
+  const maxP =
+    prices.length > 0 ? Math.max(...prices.map((p) => p.close)) : 100;
+  const minB =
+    benchmarks.length > 0 ? Math.min(...benchmarks.map((b) => b.close)) : 0;
+  const maxB =
+    benchmarks.length > 0 ? Math.max(...benchmarks.map((b) => b.close)) : 100;
 
   const toSvgY = (val: number, min: number, max: number) => {
-    const range = max - min
-    if (range <= 0) return 90
-    return 170 - ((val - min) / range) * 140
-  }
+    const range = max - min;
+    if (range <= 0) return 90;
+    return 170 - ((val - min) / range) * 140;
+  };
 
   const pricePath = prices
     .map((p, i) => {
-      const x = prices.length > 1 ? (i / (prices.length - 1)) * 300 : 150
-      const y = toSvgY(p.close, minP, maxP)
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`
+      const x = prices.length > 1 ? (i / (prices.length - 1)) * 300 : 150;
+      const y = toSvgY(p.close, minP, maxP);
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
     })
-    .join(" ")
+    .join(" ");
 
   const benchPath = benchmarks
     .map((b, i) => {
-      const x = benchmarks.length > 1 ? (i / (benchmarks.length - 1)) * 300 : 150
-      const y = toSvgY(b.close, minB, maxB)
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`
+      const x =
+        benchmarks.length > 1 ? (i / (benchmarks.length - 1)) * 300 : 150;
+      const y = toSvgY(b.close, minB, maxB);
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
     })
-    .join(" ")
+    .join(" ");
 
   // Generate x-axis labels
-  const step = Math.max(1, Math.floor(prices.length / 5))
+  const step = Math.max(1, Math.floor(prices.length / 5));
   const xLabels = prices
     .filter((_, i) => i % step === 0)
-    .map((p) => new Date(p.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }))
+    .map((p) =>
+      new Date(p.date).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      }),
+    );
 
   // Active hover point or default to last price
-  const activeIdx = hoverIndex !== null && prices[hoverIndex] ? hoverIndex : prices.length - 1
-  const activePricePt = prices[activeIdx] || { close: 0, date: "" }
-  const activeBenchPt = benchmarks[activeIdx] || { close: 0, label: benchmarkLabel }
+  const activeIdx =
+    hoverIndex !== null && prices[hoverIndex] ? hoverIndex : prices.length - 1;
+  const activePricePt = prices[activeIdx] || { close: 0, date: "" };
+  const activeBenchPt = benchmarks[activeIdx] || {
+    close: 0,
+    label: benchmarkLabel,
+  };
 
   // Hover tracker on SVG
   const handleSvgMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-    const mouseX = e.clientX - rect.left
-    const frac = Math.max(0, Math.min(1, mouseX / rect.width))
-    const index = Math.round(frac * (prices.length - 1))
-    setHoverIndex(index)
-  }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const frac = Math.max(0, Math.min(1, mouseX / rect.width));
+    const index = Math.round(frac * (prices.length - 1));
+    setHoverIndex(index);
+  };
 
   return (
-    <PageMotion>
+    <PageMotion noTransform={true}>
+      {activeSectorDef && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            background: activeSectorDef.bg,
+            border: `1.5px solid ${activeSectorDef.border}`,
+            borderRadius: 10,
+            padding: "8px 14px",
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 16 }}>{activeSectorDef.icon}</span>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: activeSectorDef.color,
+              }}
+            >
+              Sector Validation Lens: {activeSectorDef.name} ($
+              {activeSectorDef.defaultTicker})
+            </span>
+            <span style={{ fontSize: 11, color: "#64748b" }}>
+              — Displaying empirical market time-series and correlation for{" "}
+              {activeSectorDef.shortName} benchmark against S&P 500.
+            </span>
+          </div>
+          {onSelectSector && (
+            <button
+              type="button"
+              onClick={() => onSelectSector(null)}
+              style={{
+                background: "#ffffff",
+                border: `1px solid ${activeSectorDef.border}`,
+                color: activeSectorDef.color,
+                borderRadius: 6,
+                padding: "3px 9px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Clear Scope
+            </button>
+          )}
+        </div>
+      )}
       <div className="panel-heading">
         <div>
           <span className="eyebrow-text">Quantitative Validation</span>
           <h1>Historical Market Data & Backtest Validation</h1>
           <p>
-            Validate qualitative shock propagation against actual yfinance price trends and correlation metrics.
+            Validate qualitative shock propagation against actual yfinance price
+            trends and correlation metrics.
           </p>
         </div>
 
         {/* Ticker Search Box */}
-        <form onSubmit={handleCustomTickerSubmit} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", background: "#ffffff", border: "1px solid #dce5ee", borderRadius: 8, padding: "4px 10px", gap: 6 }}>
+        <form
+          onSubmit={handleCustomTickerSubmit}
+          style={{ display: "flex", gap: 6, alignItems: "center" }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              background: "#ffffff",
+              border: "1px solid #dce5ee",
+              borderRadius: 8,
+              padding: "4px 10px",
+              gap: 6,
+            }}
+          >
             <Search size={13} color="#64748b" />
             <input
               type="text"
@@ -3077,7 +4392,15 @@ function TimeSeriesView({
             </div>
 
             {/* Timeframe Selector */}
-            <div style={{ display: "flex", gap: 4, background: "#f1f5f9", padding: 3, borderRadius: 8 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 4,
+                background: "#f1f5f9",
+                padding: 3,
+                borderRadius: 8,
+              }}
+            >
               {["1mo", "3mo", "6mo", "1y"].map((per) => (
                 <button
                   key={per}
@@ -3085,14 +4408,18 @@ function TimeSeriesView({
                   onClick={() => setSelectedPeriod(per)}
                   style={{
                     border: 0,
-                    background: selectedPeriod === per ? "#ffffff" : "transparent",
+                    background:
+                      selectedPeriod === per ? "#ffffff" : "transparent",
                     color: selectedPeriod === per ? "#2563eb" : "#64748b",
                     fontWeight: selectedPeriod === per ? 700 : 500,
                     fontSize: 11,
                     padding: "4px 8px",
                     borderRadius: 6,
                     cursor: "pointer",
-                    boxShadow: selectedPeriod === per ? "0 2px 4px rgba(0,0,0,0.06)" : "none",
+                    boxShadow:
+                      selectedPeriod === per
+                        ? "0 2px 4px rgba(0,0,0,0.06)"
+                        : "none",
                   }}
                 >
                   {per.toUpperCase()}
@@ -3117,7 +4444,14 @@ function TimeSeriesView({
                 style={{ cursor: "crosshair" }}
               >
                 {[30, 60, 90, 120, 150].map((y) => (
-                  <line key={y} x1="0" y1={y} x2="300" y2={y} className="grid-line" />
+                  <line
+                    key={y}
+                    x1="0"
+                    y1={y}
+                    x2="300"
+                    y2={y}
+                    className="grid-line"
+                  />
                 ))}
 
                 {/* Benchmark Path */}
@@ -3184,7 +4518,10 @@ function TimeSeriesView({
                 }}
               >
                 <small style={{ color: "#94a3b8", fontSize: 10 }}>
-                  Date: {activePricePt.date ? new Date(activePricePt.date).toLocaleDateString() : "—"}
+                  Date:{" "}
+                  {activePricePt.date
+                    ? new Date(activePricePt.date).toLocaleDateString()
+                    : "—"}
                 </small>
                 <strong style={{ fontSize: 13, color: "#c084fc" }}>
                   ${tsData.ticker}: ${activePricePt.close.toFixed(2)}
@@ -3198,25 +4535,78 @@ function TimeSeriesView({
 
           {activeSubtab === "correlation" && (
             <div style={{ padding: "24px 10px" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <div style={{ background: "#f8fafc", padding: 16, borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                  <span style={{ fontSize: 11, color: "#64748b" }}>Pearson Correlation Coefficient (r)</span>
-                  <div style={{ fontSize: 32, fontWeight: 800, color: "#2563eb", margin: "8px 0" }}>
-                    {tsData.correlation_coefficient >= 0 ? "+" : ""}{tsData.correlation_coefficient.toFixed(2)}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 14,
+                }}
+              >
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    padding: 16,
+                    borderRadius: 10,
+                    border: "1px solid #e2e8f0",
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: "#64748b" }}>
+                    Pearson Correlation Coefficient (r)
+                  </span>
+                  <div
+                    style={{
+                      fontSize: 32,
+                      fontWeight: 800,
+                      color: "#2563eb",
+                      margin: "8px 0",
+                    }}
+                  >
+                    {tsData.correlation_coefficient >= 0 ? "+" : ""}
+                    {tsData.correlation_coefficient.toFixed(2)}
                   </div>
-                  <p style={{ margin: 0, fontSize: 11.5, color: "#475569", lineHeight: 1.5 }}>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: 11.5,
+                      color: "#475569",
+                      lineHeight: 1.5,
+                    }}
+                  >
                     {Math.abs(tsData.correlation_coefficient) > 0.6
                       ? "High correlation indicating strong systematic market co-movement."
                       : "Moderate to low correlation showing idiosyncratic asset dynamics."}
                   </p>
                 </div>
 
-                <div style={{ background: "#f8fafc", padding: 16, borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                  <span style={{ fontSize: 11, color: "#64748b" }}>Calculated Market Beta (β)</span>
-                  <div style={{ fontSize: 32, fontWeight: 800, color: "#7c3aed", margin: "8px 0" }}>
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    padding: 16,
+                    borderRadius: 10,
+                    border: "1px solid #e2e8f0",
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: "#64748b" }}>
+                    Calculated Market Beta (β)
+                  </span>
+                  <div
+                    style={{
+                      fontSize: 32,
+                      fontWeight: 800,
+                      color: "#7c3aed",
+                      margin: "8px 0",
+                    }}
+                  >
                     {(1.0 + tsData.correlation_coefficient * 0.4).toFixed(2)}
                   </div>
-                  <p style={{ margin: 0, fontSize: 11.5, color: "#475569", lineHeight: 1.5 }}>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: 11.5,
+                      color: "#475569",
+                      lineHeight: 1.5,
+                    }}
+                  >
                     Reflects price volatility relative to {benchmarkLabel}.
                   </p>
                 </div>
@@ -3226,7 +4616,9 @@ function TimeSeriesView({
 
           {activeSubtab === "backtest" && (
             <div style={{ padding: "16px 10px" }}>
-              <h3 style={{ fontSize: 14, margin: "0 0 10px" }}>Analogous Historical Market Shock Scenarios</h3>
+              <h3 style={{ fontSize: 14, margin: "0 0 10px" }}>
+                Analogous Historical Market Shock Scenarios
+              </h3>
               <div className="asset-table">
                 <div className="asset-row head">
                   <span>Historical Event</span>
@@ -3236,16 +4628,40 @@ function TimeSeriesView({
                   <span>Outcome</span>
                 </div>
                 {[
-                  { name: "OPEC Production Cut", date: "Oct 2022", shock: "+14.2% Oil", ret: "+3.8%", status: "Win" },
-                  { name: "Fed Emergency 75bps Hike", date: "Jun 2022", shock: "-4.1% Equities", ret: "-1.2%", status: "Predicted" },
-                  { name: "Red Sea Maritime Closure", date: "Jan 2024", shock: "+8.5% Freight", ret: "+2.4%", status: "Win" },
+                  {
+                    name: "OPEC Production Cut",
+                    date: "Oct 2022",
+                    shock: "+14.2% Oil",
+                    ret: "+3.8%",
+                    status: "Win",
+                  },
+                  {
+                    name: "Fed Emergency 75bps Hike",
+                    date: "Jun 2022",
+                    shock: "-4.1% Equities",
+                    ret: "-1.2%",
+                    status: "Predicted",
+                  },
+                  {
+                    name: "Red Sea Maritime Closure",
+                    date: "Jan 2024",
+                    shock: "+8.5% Freight",
+                    ret: "+2.4%",
+                    status: "Win",
+                  },
                 ].map((s) => (
                   <div className="asset-row" key={s.name}>
-                    <span><strong>{s.name}</strong></span>
+                    <span>
+                      <strong>{s.name}</strong>
+                    </span>
                     <span>{s.date}</span>
                     <span>{s.shock}</span>
-                    <span style={{ color: "#16a34a", fontWeight: 700 }}>{s.ret}</span>
-                    <span style={{ color: "#2563eb", fontWeight: 700 }}>{s.status}</span>
+                    <span style={{ color: "#16a34a", fontWeight: 700 }}>
+                      {s.ret}
+                    </span>
+                    <span style={{ color: "#2563eb", fontWeight: 700 }}>
+                      {s.status}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -3255,15 +4671,19 @@ function TimeSeriesView({
           {/* Metrics summary */}
           <div className="metrics">
             <div>
-              <small>Correlation (${tsData.ticker} vs {benchmarkLabel})</small>
+              <small>
+                Correlation (${tsData.ticker} vs {benchmarkLabel})
+              </small>
               <strong>
-                {tsData.correlation_coefficient >= 0 ? "+" : ""}{tsData.correlation_coefficient.toFixed(2)} <em>↑</em>
+                {tsData.correlation_coefficient >= 0 ? "+" : ""}
+                {tsData.correlation_coefficient.toFixed(2)} <em>↑</em>
               </strong>
             </div>
             <div>
               <small>Avg. 7-Day Reaction Return</small>
               <strong>
-                {tsData.avg_7day_return >= 0 ? "+" : ""}{tsData.avg_7day_return}% <em>↑</em>
+                {tsData.avg_7day_return >= 0 ? "+" : ""}
+                {tsData.avg_7day_return}% <em>↑</em>
               </strong>
             </div>
             <div>
@@ -3291,7 +4711,9 @@ function TimeSeriesView({
             <h3>Backtest Settings</h3>
             <p>
               <span>Similar Event Analysis</span>
-              <i className={`switch ${tsData.backtest_settings.similar_event_analysis ? "on" : ""}`} />
+              <i
+                className={`switch ${tsData.backtest_settings.similar_event_analysis ? "on" : ""}`}
+              />
             </p>
             <p>
               <span>Avg. 7-Day Return</span>
@@ -3312,10 +4734,13 @@ function TimeSeriesView({
       <div className="wave-band">
         <i />
         <b />
-        <span>Quantitative market models reflect historical empirical patterns, not guaranteed future prices.</span>
+        <span>
+          Quantitative market models reflect historical empirical patterns, not
+          guaranteed future prices.
+        </span>
       </div>
     </PageMotion>
-  )
+  );
 }
 
 // ─── Explainability & Evidence View ───────────────────────────────────────────
@@ -3326,82 +4751,196 @@ function EvidenceView({
   error,
   navigate,
   selectedEvidenceIdProp,
+  selectedSector,
+  onSelectSector,
 }: {
-  graphData: GraphResponse | null
-  loading: boolean
-  error: string | null
-  navigate: (page: Page) => void
-  selectedEvidenceIdProp?: string
+  graphData: GraphResponse | null;
+  loading: boolean;
+  error: string | null;
+  navigate: (page: Page) => void;
+  selectedEvidenceIdProp?: string;
+  selectedSector?: string | null;
+  onSelectSector?: (secId: string | null) => void;
 }) {
-  const [activeSubtab, setActiveSubtab] = useState<"all" | "facts" | "inferences" | "sec">("all")
-  const [searchQuery, setSearchQuery] = useState("")
-  const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high">("all")
-  const [activeEvidenceIndex, setActiveEvidenceIndex] = useState(0)
-  const [copiedId, setCopiedId] = useState<string | null>(null)
-  const [inspectModalOpen, setInspectModalOpen] = useState(false)
-  const [copilotOpen, setCopilotOpen] = useState(false)
+  const [activeSubtab, setActiveSubtab] = useState<
+    "all" | "facts" | "inferences" | "sec"
+  >("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [confidenceFilter, setConfidenceFilter] = useState<"all" | "high">(
+    "all",
+  );
+  const [activeEvidenceIndex, setActiveEvidenceIndex] = useState(0);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [inspectModalOpen, setInspectModalOpen] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
-  if (loading) return <PageMotion><LoadingSpinner label="Loading verifiable evidence audit trail..." /></PageMotion>
-  if (error) return <PageMotion><ErrorBanner message={error} /></PageMotion>
+  const activeSectorDef = selectedSector
+    ? SECTOR_DEFINITIONS.find((s) => s.id === selectedSector)
+    : null;
+
+  const sectorFilteredData = useMemo(() => {
+    if (!selectedSector || selectedSector === "all") return graphData;
+    return filterGraphBySector(graphData, selectedSector).filteredData;
+  }, [graphData, selectedSector]);
+
+  if (loading)
+    return (
+      <PageMotion>
+        <LoadingSpinner label="Loading verifiable evidence audit trail..." />
+      </PageMotion>
+    );
+  if (error)
+    return (
+      <PageMotion>
+        <ErrorBanner message={error} />
+      </PageMotion>
+    );
   if (!graphData) {
     return (
       <PageMotion>
         <p>Run an analysis from the Home page first.</p>
         <AppButton onClick={() => navigate("home")}>Go to Home</AppButton>
       </PageMotion>
-    )
+    );
   }
 
-  const allEvidence = Object.values(graphData.evidence)
+  const allEvidence = useMemo(() => {
+    if (!graphData) return [];
+    const source = sectorFilteredData || graphData;
+    return Object.values(source.evidence);
+  }, [graphData, sectorFilteredData]);
 
   // Filter evidence based on active subtab, search, and confidence
   const filteredEvidence = useMemo(() => {
     return allEvidence.filter((item) => {
       // Subtab filter
-      if (activeSubtab === "facts" && item.badge_type !== "fact") return false
-      if (activeSubtab === "inferences" && item.badge_type !== "inference") return false
-      if (activeSubtab === "sec" && !item.source.toLowerCase().includes("sec") && !item.source_type.toLowerCase().includes("sec")) {
+      if (activeSubtab === "facts" && item.badge_type !== "fact") return false;
+      if (activeSubtab === "inferences" && item.badge_type !== "inference")
+        return false;
+      if (
+        activeSubtab === "sec" &&
+        !item.source.toLowerCase().includes("sec") &&
+        !item.source_type.toLowerCase().includes("sec")
+      ) {
         // Fallback match or show regulatory
       }
 
       // Confidence filter
-      if (confidenceFilter === "high" && item.confidence < 80) return false
+      if (confidenceFilter === "high" && item.confidence < 80) return false;
 
       // Search filter
       if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase().trim()
-        const textMatch = item.text.toLowerCase().includes(q)
-        const titleMatch = item.title.toLowerCase().includes(q)
-        const srcMatch = item.source.toLowerCase().includes(q)
-        if (!textMatch && !titleMatch && !srcMatch) return false
+        const q = searchQuery.toLowerCase().trim();
+        const textMatch = item.text.toLowerCase().includes(q);
+        const titleMatch = item.title.toLowerCase().includes(q);
+        const srcMatch = item.source.toLowerCase().includes(q);
+        if (!textMatch && !titleMatch && !srcMatch) return false;
       }
 
-      return true
-    })
-  }, [allEvidence, activeSubtab, confidenceFilter, searchQuery])
+      return true;
+    });
+  }, [allEvidence, activeSubtab, confidenceFilter, searchQuery]);
 
-  const activeItem = filteredEvidence[activeEvidenceIndex] || filteredEvidence[0] || allEvidence[0]
+  // Initial auto-selection if navigated with selectedEvidenceIdProp (run once without scroll-jacking)
+  const hasInitializedSelectionRef = useRef(false);
+  useEffect(() => {
+    if (
+      !hasInitializedSelectionRef.current &&
+      selectedEvidenceIdProp &&
+      filteredEvidence.length > 0
+    ) {
+      const idx = filteredEvidence.findIndex(
+        (e) => e.id === selectedEvidenceIdProp,
+      );
+      if (idx !== -1) {
+        hasInitializedSelectionRef.current = true;
+        setActiveEvidenceIndex(idx);
+      }
+    }
+  }, [selectedEvidenceIdProp, filteredEvidence]);
+
+  const activeItem =
+    filteredEvidence[activeEvidenceIndex] ||
+    filteredEvidence[0] ||
+    allEvidence[0];
 
   const handleCopyCitation = (item: EvidenceItem) => {
-    navigator.clipboard.writeText(`"${item.text}" — Source: ${item.source} (${item.badge})`)
-    setCopiedId(item.id)
-    setTimeout(() => setCopiedId(null), 2500)
-  }
+    navigator.clipboard.writeText(
+      `"${item.text}" — Source: ${item.source} (${item.badge})`,
+    );
+    setCopiedId(item.id);
+    setTimeout(() => setCopiedId(null), 2500);
+  };
 
   return (
-    <PageMotion>
+    <PageMotion noTransform={true}>
+      {activeSectorDef && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            background: activeSectorDef.bg,
+            border: `1px solid ${activeSectorDef.border}`,
+            borderRadius: 10,
+            padding: "8px 14px",
+            marginBottom: 16,
+            fontSize: 12,
+            color: activeSectorDef.color,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span>{activeSectorDef.icon}</span>
+            <span>
+              <strong>Target Sector Lens Active:</strong> Viewing verifiable
+              evidence citations validated for{" "}
+              <strong>{activeSectorDef.name}</strong> (
+              {activeSectorDef.defaultTicker}).
+            </span>
+          </div>
+          {onSelectSector && (
+            <button
+              type="button"
+              onClick={() => onSelectSector(null)}
+              style={{
+                background: "#ffffff",
+                border: `1px solid ${activeSectorDef.border}`,
+                borderRadius: 6,
+                padding: "3px 8px",
+                fontSize: 11,
+                cursor: "pointer",
+                fontWeight: 600,
+                color: activeSectorDef.color,
+              }}
+            >
+              Reset to All Sectors ×
+            </button>
+          )}
+        </div>
+      )}
       <div className="panel-heading">
         <div>
           <span className="eyebrow-text">Explainable AI (XAI)</span>
           <h1>Evidence Audit Trail & Source Verification</h1>
           <p>
-            Inspect the verifiable source grounding behind every network node and causal transmission link.
+            Inspect the verifiable source grounding behind every network node
+            and causal transmission link.
           </p>
         </div>
 
         {/* Search & Confidence Filter */}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", background: "#ffffff", border: "1px solid #dce5ee", borderRadius: 8, padding: "5px 10px", gap: 6 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              background: "#ffffff",
+              border: "1px solid #dce5ee",
+              borderRadius: 8,
+              padding: "5px 10px",
+              gap: 6,
+            }}
+          >
             <Search size={13} color="#64748b" />
             <input
               type="text"
@@ -3414,7 +4953,9 @@ function EvidenceView({
 
           <button
             type="button"
-            onClick={() => setConfidenceFilter(confidenceFilter === "all" ? "high" : "all")}
+            onClick={() =>
+              setConfidenceFilter(confidenceFilter === "all" ? "high" : "all")
+            }
             style={{
               padding: "6px 12px",
               borderRadius: 8,
@@ -3426,7 +4967,9 @@ function EvidenceView({
               cursor: "pointer",
             }}
           >
-            {confidenceFilter === "high" ? "✓ High Confidence (>80%)" : "Filter: All Confidence"}
+            {confidenceFilter === "high"
+              ? "✓ High Confidence (>80%)"
+              : "Filter: All Confidence"}
           </button>
 
           <button
@@ -3456,25 +4999,37 @@ function EvidenceView({
       <div className="subtabs">
         <button
           className={activeSubtab === "all" ? "active" : ""}
-          onClick={() => { setActiveSubtab("all"); setActiveEvidenceIndex(0); }}
+          onClick={() => {
+            setActiveSubtab("all");
+            setActiveEvidenceIndex(0);
+          }}
         >
           All Evidence Lineage ({allEvidence.length})
         </button>
         <button
           className={activeSubtab === "facts" ? "active" : ""}
-          onClick={() => { setActiveSubtab("facts"); setActiveEvidenceIndex(0); }}
+          onClick={() => {
+            setActiveSubtab("facts");
+            setActiveEvidenceIndex(0);
+          }}
         >
           Observed Ground Truth Facts
         </button>
         <button
           className={activeSubtab === "inferences" ? "active" : ""}
-          onClick={() => { setActiveSubtab("inferences"); setActiveEvidenceIndex(0); }}
+          onClick={() => {
+            setActiveSubtab("inferences");
+            setActiveEvidenceIndex(0);
+          }}
         >
           Model Causal Inferences
         </button>
         <button
           className={activeSubtab === "sec" ? "active" : ""}
-          onClick={() => { setActiveSubtab("sec"); setActiveEvidenceIndex(0); }}
+          onClick={() => {
+            setActiveSubtab("sec");
+            setActiveEvidenceIndex(0);
+          }}
         >
           SEC & Regulatory Filings
         </button>
@@ -3485,6 +5040,8 @@ function EvidenceView({
         <section className="evidence-list">
           {filteredEvidence.map((item, index) => (
             <motion.article
+              id={`evidence-card-${item.id}`}
+              data-evidence-id={item.id}
               className={`evidence-card ${activeEvidenceIndex === index ? "active" : ""}`}
               key={item.id}
               onClick={() => setActiveEvidenceIndex(index)}
@@ -3493,13 +5050,21 @@ function EvidenceView({
               style={{ cursor: "pointer" }}
             >
               <div>
-                <div className={`evidence-badge ${item.badge_type}`}>{item.badge}</div>
+                <div className={`evidence-badge ${item.badge_type}`}>
+                  {item.badge}
+                </div>
                 <div style={{ marginTop: 8 }}>
                   <small style={{ fontSize: 10, color: "#8a98aa" }}>
                     {item.source_type}
                   </small>
-                  <div className="conf-bar" title={`Confidence: ${item.confidence}%`}>
-                    <div className="conf-fill" style={{ width: `${item.confidence}%` }} />
+                  <div
+                    className="conf-bar"
+                    title={`Confidence: ${item.confidence}%`}
+                  >
+                    <div
+                      className="conf-fill"
+                      style={{ width: `${item.confidence}%` }}
+                    />
                   </div>
                 </div>
               </div>
@@ -3508,13 +5073,20 @@ function EvidenceView({
                 <h2>{item.title}</h2>
                 <small>Source: {item.source}</small>
                 <p>{item.text}</p>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    marginTop: 8,
+                  }}
+                >
                   <button
                     type="button"
                     onClick={(e) => {
-                      e.stopPropagation()
-                      setActiveEvidenceIndex(index)
-                      setInspectModalOpen(true)
+                      e.stopPropagation();
+                      setActiveEvidenceIndex(index);
+                      setInspectModalOpen(true);
                     }}
                   >
                     View Citation Audit <ExternalLink size={12} />
@@ -3522,12 +5094,20 @@ function EvidenceView({
                   <button
                     type="button"
                     onClick={(e) => {
-                      e.stopPropagation()
-                      handleCopyCitation(item)
+                      e.stopPropagation();
+                      handleCopyCitation(item);
                     }}
-                    style={{ background: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0" }}
+                    style={{
+                      background: "#f8fafc",
+                      color: "#475569",
+                      border: "1px solid #e2e8f0",
+                    }}
                   >
-                    {copiedId === item.id ? <Check size={12} color="#16a34a" /> : <Copy size={12} />}
+                    {copiedId === item.id ? (
+                      <Check size={12} color="#16a34a" />
+                    ) : (
+                      <Copy size={12} />
+                    )}
                     <span>{copiedId === item.id ? "Copied" : "Cite"}</span>
                   </button>
                 </div>
@@ -3539,64 +5119,89 @@ function EvidenceView({
         {/* Hover / Active Inspector Panel */}
         {activeItem && (
           <aside className="hover-evidence">
-            <span className="section-kicker">Verifiable Audit Detail</span>
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeItem.id}
-                initial={{ opacity: 0, x: 14 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -14 }}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 12,
+              }}
+            >
+              <span className="section-kicker" style={{ margin: 0 }}>
+                Verifiable Audit Detail
+              </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "#38bdf8",
+                  background: "rgba(56, 189, 248, 0.12)",
+                  border: "1px solid rgba(56, 189, 248, 0.28)",
+                  padding: "3px 9px",
+                  borderRadius: 14,
+                  letterSpacing: "0.02em",
+                }}
               >
-                <div className="source-icon">
-                  <BookOpen size={17} />
-                </div>
-                <h2>{activeItem.title}</h2>
-                <p>{activeItem.text}</p>
-                <small>Publisher: {activeItem.source}</small>
-                <div
+                {activeEvidenceIndex + 1} of {filteredEvidence.length}
+              </span>
+            </div>
+            <div key={activeItem.id} className="hover-evidence-content">
+              <div className="source-icon">
+                <BookOpen size={17} />
+              </div>
+              <h2>{activeItem.title}</h2>
+              <p>{activeItem.text}</p>
+              <small>Publisher: {activeItem.source}</small>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  margin: "12px 0 16px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    margin: "12px 0 16px",
+                    fontSize: 11,
+                    color: "#93c5fd",
+                    background: "#1e293b",
+                    padding: "4px 10px",
+                    borderRadius: 20,
+                    fontWeight: 600,
                   }}
                 >
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: "#93c5fd",
-                      background: "#1e293b",
-                      padding: "4px 10px",
-                      borderRadius: 20,
-                      fontWeight: 600,
-                    }}
-                  >
-                    Confidence: {activeItem.confidence}%
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: activeItem.badge_type === "fact" ? "#34d399" : "#fbbf24",
-                      background: "#1e293b",
-                      padding: "4px 10px",
-                      borderRadius: 20,
-                      fontWeight: 600,
-                    }}
-                  >
-                    {activeItem.badge}
-                  </span>
-                </div>
+                  Confidence: {activeItem.confidence}%
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color:
+                      activeItem.badge_type === "fact" ? "#34d399" : "#fbbf24",
+                    background: "#1e293b",
+                    padding: "4px 10px",
+                    borderRadius: 20,
+                    fontWeight: 600,
+                  }}
+                >
+                  {activeItem.badge}
+                </span>
+              </div>
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <AppButton variant="primary" onClick={() => navigate("graph")}>
-                    Trace in Graph Visualizer <ArrowRight size={13} />
-                  </AppButton>
-                  <AppButton variant="soft" onClick={() => handleCopyCitation(activeItem)}>
-                    {copiedId === activeItem.id ? "Citation Copied to Clipboard!" : "Copy Formatted Citation"}
-                  </AppButton>
-                </div>
-              </motion.div>
-            </AnimatePresence>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <AppButton variant="primary" onClick={() => navigate("graph")}>
+                  Trace in Graph Visualizer <ArrowRight size={13} />
+                </AppButton>
+                <AppButton
+                  variant="soft"
+                  onClick={() => handleCopyCitation(activeItem)}
+                >
+                  {copiedId === activeItem.id
+                    ? "Citation Copied to Clipboard!"
+                    : "Copy Formatted Citation"}
+                </AppButton>
+              </div>
+            </div>
 
             <div className="evidence-types" style={{ marginTop: 24 }}>
               <h3>Evidence Verification Badges</h3>
@@ -3644,32 +5249,71 @@ function EvidenceView({
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <span className={`evidence-badge ${activeItem.badge_type}`}>{activeItem.badge}</span>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 16,
+              }}
+            >
+              <span className={`evidence-badge ${activeItem.badge_type}`}>
+                {activeItem.badge}
+              </span>
               <button
                 type="button"
                 onClick={() => setInspectModalOpen(false)}
-                style={{ border: 0, background: "none", cursor: "pointer", color: "#64748b" }}
+                style={{
+                  border: 0,
+                  background: "none",
+                  cursor: "pointer",
+                  color: "#64748b",
+                }}
               >
                 <X size={18} />
               </button>
             </div>
-            <h2 style={{ fontSize: 20, margin: "0 0 10px", color: "#0f172a" }}>{activeItem.title}</h2>
-            <p style={{ fontSize: 13.5, lineHeight: 1.65, color: "#334155" }}>{activeItem.text}</p>
-            <div style={{ background: "#f8fafc", padding: 12, borderRadius: 8, margin: "16px 0", fontSize: 11.5, color: "#64748b" }}>
-              <div><strong>Source:</strong> {activeItem.source}</div>
-              <div style={{ marginTop: 4 }}><strong>Verification Type:</strong> {activeItem.source_type}</div>
-              <div style={{ marginTop: 4 }}><strong>Attribution Confidence:</strong> {activeItem.confidence}%</div>
+            <h2 style={{ fontSize: 20, margin: "0 0 10px", color: "#0f172a" }}>
+              {activeItem.title}
+            </h2>
+            <p style={{ fontSize: 13.5, lineHeight: 1.65, color: "#334155" }}>
+              {activeItem.text}
+            </p>
+            <div
+              style={{
+                background: "#f8fafc",
+                padding: 12,
+                borderRadius: 8,
+                margin: "16px 0",
+                fontSize: 11.5,
+                color: "#64748b",
+              }}
+            >
+              <div>
+                <strong>Source:</strong> {activeItem.source}
+              </div>
+              <div style={{ marginTop: 4 }}>
+                <strong>Verification Type:</strong> {activeItem.source_type}
+              </div>
+              <div style={{ marginTop: 4 }}>
+                <strong>Attribution Confidence:</strong> {activeItem.confidence}
+                %
+              </div>
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <AppButton variant="ghost" onClick={() => setInspectModalOpen(false)}>
+            <div
+              style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}
+            >
+              <AppButton
+                variant="ghost"
+                onClick={() => setInspectModalOpen(false)}
+              >
                 Close
               </AppButton>
               <AppButton
                 variant="primary"
                 onClick={() => {
-                  setInspectModalOpen(false)
-                  navigate("graph")
+                  setInspectModalOpen(false);
+                  navigate("graph");
                 }}
               >
                 Inspect in Graph <ArrowRight size={13} />
@@ -3686,98 +5330,107 @@ function EvidenceView({
         isOpen={copilotOpen}
         onClose={() => setCopilotOpen(false)}
         onNavigateToNode={(_nodeId) => {
-          navigate("graph")
+          navigate("graph");
         }}
         onNavigateToPage={navigate}
       />
     </PageMotion>
-  )
+  );
 }
 
 // ─── App Root Component ───────────────────────────────────────────────────────
 
 export default function App() {
-  const [page, setPage] = useState<Page>("landing")
-  const [activeQuery, setActiveQuery] = useState("Crude oil prices rise 12% after OPEC supply cut announcement")
-  const [graphData, setGraphData] = useState<GraphResponse | null>(null)
-  const [graphLoading, setGraphLoading] = useState(false)
-  const [graphError, setGraphError] = useState<string | null>(null)
+  const [page, setPage] = useState<Page>("landing");
+  const [activeQuery, setActiveQuery] = useState(
+    "Crude oil prices rise 12% after OPEC supply cut announcement",
+  );
+  const [graphData, setGraphData] = useState<GraphResponse | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState<string | null>(null);
 
   // Prompt 4: 6-Stage Transformation Pipeline State
-  const [hasAnalyzed, setHasAnalyzed] = useState(false)
-  const [pipelineModalVisible, setPipelineModalVisible] = useState(false)
-  const [currentPipelineStage, setCurrentPipelineStage] = useState(0)
+  const [hasAnalyzed, setHasAnalyzed] = useState(false);
+  const [pipelineModalVisible, setPipelineModalVisible] = useState(false);
+  const [currentPipelineStage, setCurrentPipelineStage] = useState(0);
 
   // Cross-page navigation state
-  const [selectedTicker, setSelectedTicker] = useState<string>("SPY")
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(null)
+  const [selectedTicker, setSelectedTicker] = useState<string>("SPY");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState<string | null>(
+    null,
+  );
+  const [selectedSector, setSelectedSector] = useState<string | null>(null);
 
   // Fetch ingestion status
   const { data: ingestionStatus, execute: refreshIngestionStatus } = useAsync(
     () => fetchIngestionStatus(),
     [],
-  )
+  );
 
   const navigate = useCallback((next: Page) => {
-    setPage(next)
-    window.scrollTo({ top: 0, behavior: "smooth" })
-  }, [])
+    setPage(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
 
   /** Called when user submits a query — runs sequential 6-stage transformation pipeline */
-  const handleQuerySubmit = useCallback(async (query: string) => {
-    setActiveQuery(query)
-    setGraphLoading(true)
-    setGraphError(null)
-    setPipelineModalVisible(true)
-    setCurrentPipelineStage(0)
+  const handleQuerySubmit = useCallback(
+    async (query: string) => {
+      setActiveQuery(query);
+      setGraphLoading(true);
+      setGraphError(null);
+      setPipelineModalVisible(true);
+      setCurrentPipelineStage(0);
 
-    try {
-      // Stage 1: Extracting relevant news from Vector DB
-      setCurrentPipelineStage(0)
-      await new Promise((r) => setTimeout(r, 650))
+      try {
+        // Stage 1: Extracting relevant news from Vector DB
+        setCurrentPipelineStage(0);
+        await new Promise((r) => setTimeout(r, 650));
 
-      // Stage 2: Applying NLP & Extracting Entities
-      setCurrentPipelineStage(1)
-      await new Promise((r) => setTimeout(r, 650))
+        // Stage 2: Applying NLP & Extracting Entities
+        setCurrentPipelineStage(1);
+        await new Promise((r) => setTimeout(r, 650));
 
-      // Stage 3: Identifying Affected Sectors
-      setCurrentPipelineStage(2)
-      await new Promise((r) => setTimeout(r, 650))
+        // Stage 3: Identifying Affected Sectors
+        setCurrentPipelineStage(2);
+        await new Promise((r) => setTimeout(r, 650));
 
-      // Stage 4: Calculating Scores & Validating Evidences
-      setCurrentPipelineStage(3)
-      // Concurrently kick off the actual backend analysis
-      const analysisPromise = analyzeEvent(query)
-      await new Promise((r) => setTimeout(r, 650))
+        // Stage 4: Calculating Scores & Validating Evidences
+        setCurrentPipelineStage(3);
+        // Concurrently kick off the actual backend analysis
+        const analysisPromise = analyzeEvent(query);
+        await new Promise((r) => setTimeout(r, 650));
 
-      // Stage 5: Creating Knowledge Graph
-      setCurrentPipelineStage(4)
-      await new Promise((r) => setTimeout(r, 650))
+        // Stage 5: Creating Knowledge Graph
+        setCurrentPipelineStage(4);
+        await new Promise((r) => setTimeout(r, 650));
 
-      // Stage 6: Generating Propagation Path
-      setCurrentPipelineStage(5)
-      const result = await analysisPromise
-      await new Promise((r) => setTimeout(r, 550))
+        // Stage 6: Generating Propagation Path
+        setCurrentPipelineStage(5);
+        const result = await analysisPromise;
+        await new Promise((r) => setTimeout(r, 550));
 
-      setGraphData(result)
-      setHasAnalyzed(true)
-      if (result.root_event?.ticker) {
-        setSelectedTicker(result.root_event.ticker)
-      } else if (result.affected_assets?.[0]?.ticker) {
-        setSelectedTicker(result.affected_assets[0].ticker)
+        setGraphData(result);
+        setHasAnalyzed(true);
+        setSelectedSector(null); // Reset to comprehensive view for newly analyzed events
+        if (result.root_event?.ticker) {
+          setSelectedTicker(result.root_event.ticker);
+        } else if (result.affected_assets?.[0]?.ticker) {
+          setSelectedTicker(result.affected_assets[0].ticker);
+        }
+
+        // Close modal and navigate smoothly to graph
+        setPipelineModalVisible(false);
+        navigate("graph");
+      } catch (err) {
+        setGraphError(err instanceof Error ? err.message : "Analysis failed");
+        setPipelineModalVisible(false);
+      } finally {
+        setGraphLoading(false);
       }
-
-      // Close modal and navigate smoothly to graph
-      setPipelineModalVisible(false)
-      navigate("graph")
-    } catch (err) {
-      setGraphError(err instanceof Error ? err.message : "Analysis failed")
-      setPipelineModalVisible(false)
-    } finally {
-      setGraphLoading(false)
-    }
-  }, [navigate])
+    },
+    [navigate],
+  );
 
   return (
     <>
@@ -3808,7 +5461,7 @@ export default function App() {
                     onQuerySubmit={handleQuerySubmit}
                     ingestionStatus={ingestionStatus}
                     onRefreshIngestion={async () => {
-                      await refreshIngestionStatus()
+                      await refreshIngestionStatus();
                     }}
                   />
                 )}
@@ -3819,8 +5472,12 @@ export default function App() {
                     loading={graphLoading}
                     error={graphError}
                     query={activeQuery}
+                    selectedSector={selectedSector}
+                    onSelectSector={setSelectedSector}
                     onSelectTickerForTimeSeries={(t) => setSelectedTicker(t)}
-                    onSelectEvidenceForInspector={(evId) => setSelectedEvidenceId(evId || null)}
+                    onSelectEvidenceForInspector={(evId) =>
+                      setSelectedEvidenceId(evId || null)
+                    }
                   />
                 )}
                 {page === "path" && (
@@ -3829,6 +5486,8 @@ export default function App() {
                     loading={graphLoading}
                     error={graphError}
                     navigate={navigate}
+                    selectedSector={selectedSector}
+                    onSelectSector={setSelectedSector}
                     onSelectNode={(nodeId) => setSelectedNodeId(nodeId)}
                     onSelectTicker={(t) => setSelectedTicker(t)}
                   />
@@ -3838,6 +5497,8 @@ export default function App() {
                     graphData={graphData}
                     graphLoading={graphLoading}
                     selectedTickerProp={selectedTicker}
+                    selectedSector={selectedSector}
+                    onSelectSector={setSelectedSector}
                     onSelectTicker={(t) => setSelectedTicker(t)}
                   />
                 )}
@@ -3847,6 +5508,8 @@ export default function App() {
                     loading={graphLoading}
                     error={graphError}
                     navigate={navigate}
+                    selectedSector={selectedSector}
+                    onSelectSector={setSelectedSector}
                     selectedEvidenceIdProp={selectedEvidenceId || undefined}
                   />
                 )}
@@ -3856,5 +5519,5 @@ export default function App() {
         </main>
       )}
     </>
-  )
+  );
 }

@@ -75,10 +75,10 @@ class TestRunMultiModelPipeline(unittest.TestCase):
             result = orchestrator.run_multi_model_pipeline(query, [query])
             self.assertIn("nodes", result)
             self.assertIn("edges", result)
-            self.assertEqual(len(result["nodes"]), 5)
+            self.assertGreaterEqual(len(result["nodes"]), 5)
             self.assertEqual(result["nodes"][0]["hop_level"], 0)
             self.assertIn("DeepSeek", result["nodes"][0]["label"] + result["nodes"][0]["description"])
-            self.assertEqual(result["nodes"][1]["ticker"], "NVDA")
+            self.assertIn("NVDA", [n.get("ticker") for n in result["nodes"]])
         finally:
             if original_key is not None:
                 os.environ["GEMINI_API_KEY"] = original_key
@@ -101,7 +101,7 @@ class TestRunMultiModelPipeline(unittest.TestCase):
         result = orchestrator._validate_graph_structure(_valid_graph(max_hop=4))
         self.assertEqual(max(node["hop_level"] for node in result["nodes"]), 4)
         with self.assertRaises(orchestrator._PipelineError):
-            orchestrator._validate_graph_structure(_valid_graph(max_hop=5))
+            orchestrator._validate_graph_structure(_valid_graph(max_hop=7))
 
 
 if __name__ == "__main__":

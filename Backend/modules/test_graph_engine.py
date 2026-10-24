@@ -10,6 +10,7 @@ Covers:
 """
 
 import unittest
+from unittest.mock import patch
 from typing import Any, Dict
 
 try:
@@ -115,8 +116,17 @@ class TestBuildPropagationGraph(unittest.TestCase):
         # Hops 0, 1, 2 should be included (3 nodes)
         self.assertEqual(len(sub["nodes"]), 3)
 
-    def test_enrich_with_market_data(self):
+    @patch("Backend.modules.graph_engine.fetch_market_validation")
+    def test_enrich_with_market_data(self, mock_fetch):
         """Enriches asset nodes with real yfinance quantitative validation."""
+        mock_fetch.return_value = {
+            "status": "success",
+            "correlation_coefficient": 0.85,
+            "latest_price": 540.25,
+            "price_change_pct": 2.4,
+            "benchmark_ticker": "^GSPC",
+            "data_points": 22
+        }
         data = _make_valid_data()
         graph, _ = build_propagation_graph(data)
         enriched = enrich_graph_with_market_data(graph, period="1mo")

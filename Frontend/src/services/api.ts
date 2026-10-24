@@ -13,10 +13,13 @@
 
 import type {
   GraphResponse,
+  GraphNode,
   TimeSeriesResponse,
   VectorDBStream,
   VectorDBDocumentsResponse,
   SearchRetrievalResponse,
+  ChatRequestPayload,
+  ChatResponsePayload,
 } from "@/types/api.types"
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -254,6 +257,38 @@ export async function triggerIngestion(
 }
 
 /**
+ * Toggle the background news ingestion worker (start / stop / toggle).
+ * Allows space-saving by halting automatic vector DB insertion.
+ */
+export async function toggleIngestionWorker(
+  action: "start" | "stop" | "toggle" = "toggle"
+): Promise<{ status: string; action_taken: string; background_poller_active: boolean; message: string; total_documents?: number }> {
+  if (!FORCE_MOCK_DATA) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/ingestion/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      })
+      if (response.ok) {
+        const data = await response.json()
+        isLiveBackendActive = true
+        return data
+      }
+    } catch (err) {
+      console.warn("Toggle ingestion API call failed:", err)
+    }
+  }
+
+  return {
+    status: "success",
+    action_taken: action,
+    background_poller_active: action === "start",
+    message: action === "start" ? "Background news ingestion resumed." : "Background news ingestion paused (Space Saver Mode).",
+  }
+}
+
+/**
  * Fetch all stored VectorDB documents + deduplication audit.
  * Powers the VectorDB Live Monitor panel on the Home page.
  */
@@ -352,6 +387,133 @@ export async function fetchUserActivityHistory(): Promise<any> {
   return null
 }
 
+/**
+ * Send a message to the AI CoPilot intelligence endpoint.
+ * Connects to live FastAPI /api/chat or falls back to local intelligent synthesis.
+ */
+export async function sendCoPilotMessage(
+  message: string,
+  query: string,
+  graphData: GraphResponse | null,
+  selectedNode: GraphNode | null,
+  history: Array<{ id: string; sender: "user" | "copilot"; text: string }> = [],
+): Promise<ChatResponsePayload> {
+  const cleanMessage = message.trim()
+  if (!cleanMessage) {
+    return {
+      reply: "Please ask a question regarding the active financial event or how it affects your business.",
+      category: "prompt",
+      relevant_nodes: [],
+      confidence: 1.0,
+    }
+  }
+
+  if (!FORCE_MOCK_DATA) {
+    try {
+      const payload: ChatRequestPayload = {
+        message: cleanMessage,
+        query: query || graphData?.query || "Active Financial Event",
+        graph_context: graphData,
+        selected_node: selectedNode,
+        history: history.slice(-6),
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+
+      if (response.ok) {
+        const data = (await response.json()) as ChatResponsePayload
+        isLiveBackendActive = true
+        return data
+      }
+      console.warn("Backend /api/chat returned status", response.status, "— using client fallback synthesis.")
+    } catch (err) {
+      console.warn("Backend /api/chat unreachable — using client fallback synthesis:", err)
+    }
+  }
+
+  // Client-side fallback reasoning engine
+  return generateClientFallbackAdvisory(cleanMessage, query, graphData, selectedNode)
+}
+
+/**
+ * Concise client-side fallback synthesis engine for CoPilot.
+ * Only fires when backend is completely unreachable. Keeps all responses under 200 words.
+ */
+function generateClientFallbackAdvisory(
+  message: string,
+  query: string,
+  graphData: GraphResponse | null,
+  selectedNode: GraphNode | null,
+): ChatResponsePayload {
+  const msgLower = message.toLowerCase()
+  const rootLabel = graphData?.root_event?.label || graphData?.query || query || "Financial Shock"
+  const nodes = graphData?.nodes || []
+  const evidenceList = Object.values(graphData?.evidence || {})
+
+  // Extract name if present
+  const nameMatch = message.match(/(?:i'?m|i am|my name is|this is)\s+([A-Za-z]+)/i)
+    || message.match(/\b(ramesh|tulsi|suresh|amit|priya|rahul|alex|john)\b/i)
+  const userName = nameMatch ? nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1).toLowerCase() : null
+  const greeting = userName ? `Hey ${userName}! ` : "Hello! "
+
+  // 1. Grocery / Kirana Store
+  if (msgLower.includes("grocery") || msgLower.includes("kirana") || msgLower.includes("supermarket")
+    || msgLower.includes("ramesh") || msgLower.includes("provision") || msgLower.includes("retail shop")) {
+    return {
+      reply: `${greeting}Regarding **"${rootLabel}"** — higher fuel costs push up wholesale transport charges on groceries within 10–14 days, squeezing margins on packaged goods.\n\n**What to do right now:**\n• Stock up on 2–3 weeks of fast-moving items (oils, pulses, rice) before distributors hike rates.\n• Source fresh produce from nearby local mandis to skip long-haul transport costs.\n• Limit unsecured credit (*Khata*) to keep cash ready for supplier payments.\n\nFocus on cash flow — short-term macro noise rarely kills a well-run local shop.`,
+      category: "business_advisory",
+      relevant_nodes: nodes.slice(0, 4).map((n) => n.id),
+      confidence: 0.92,
+      evidence_citations: evidenceList.slice(0, 2).map((e) => e.title),
+    }
+  }
+
+  // 2. Real Estate / Plot / Land
+  if (msgLower.includes("plot") || msgLower.includes("land") || msgLower.includes("flat")
+    || msgLower.includes("property") || msgLower.includes("mumbai") || msgLower.includes("realty")) {
+    return {
+      reply: `${greeting}**"${rootLabel}"** won't crash your plot value. Land in metro areas is scarce and acts as an inflation hedge. However, rising inflation can delay interest rate cuts, making property loans costlier and slowing transaction volumes temporarily.\n\n**What to do:**\n• Hold firm — don't panic sell based on short-term macro headlines.\n• Keep your property documents fully updated and encumbrance-free.\n• Delay non-essential construction until material transport costs cool down.\n\nLong-term land value is driven by location scarcity, not commodity cycles.`,
+      category: "business_advisory",
+      relevant_nodes: nodes.slice(0, 3).map((n) => n.id),
+      confidence: 0.91,
+    }
+  }
+
+  // 3. Transport / Trucking
+  if (msgLower.includes("transport") || msgLower.includes("truck") || msgLower.includes("logistics")
+    || msgLower.includes("fleet") || msgLower.includes("freight")) {
+    return {
+      reply: `${greeting}Fuel is 45–55% of fleet costs, so **"${rootLabel}"** hits your cash flow immediately — pumps demand cash while shippers pay on 30–60 day cycles.\n\n**Actions:**\n• Trigger indexed fuel surcharge (FSC) clauses on active contracts.\n• Consolidate backhauls to cut empty return trips.\n• Use fleet fuel cards for 3–5% volume rebates.\n\nPass through costs fast; sitting on fixed-rate contracts during a fuel spike is the real risk.`,
+      category: "business_advisory",
+      relevant_nodes: nodes.slice(0, 3).map((n) => n.id),
+      confidence: 0.93,
+    }
+  }
+
+  // 4. Simple explanation
+  if (msgLower.includes("simple") || msgLower.includes("beginner") || msgLower.includes("explain")) {
+    return {
+      reply: `**"${rootLabel}"** is like a domino falling. A key price jumps upstream, making shipping and manufacturing more expensive. Companies pass those costs to stores, pushing up everyday prices and keeping borrowing rates higher. For most people, it means watching transport and fuel expenses rise over the next few weeks — the shock travels from commodity markets to your wallet through a chain of 3–4 steps.`,
+      category: "simple_explainer",
+      relevant_nodes: nodes.slice(0, 3).map((n) => n.id),
+      confidence: 0.95,
+    }
+  }
+
+  // 5. Default
+  return {
+    reply: `**"${rootLabel}"** affects ${nodes.length} correlated sectors in the model. The primary ripple runs through fuel, transport, and interest rate expectations. Ask me how this specifically affects your shop, property, investments, or household budget — I'll give you a direct, practical answer!`,
+    category: "general_analysis",
+    relevant_nodes: nodes.slice(0, 4).map((n) => n.id),
+    confidence: 0.90,
+  }
+}
+
 /** Expose mock mode flag */
 export const isMockMode = FORCE_MOCK_DATA
+
 

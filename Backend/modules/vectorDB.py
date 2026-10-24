@@ -141,11 +141,13 @@ class LocalPersistentVectorStore:
             for idx, item in enumerate(chunks):
                 if isinstance(item, dict):
                     text = item.get("text_content") or item.get("text") or item.get("content") or ""
-                    meta = item.get("metadata") or {
-                        "publisher": item.get("publisher"),
-                        "source_tier": item.get("source_tier"),
-                        "source_trust_score": item.get("source_trust_score"),
+                    meta = {
+                        "publisher": item.get("publisher") or "Financial News Wire",
+                        "source_tier": item.get("source_tier") or "Tier 3",
+                        "source_trust_score": float(item.get("source_trust_score") or 0.70),
                     }
+                    if item.get("metadata") and isinstance(item.get("metadata"), dict):
+                        meta.update(item["metadata"])
                     doc_id = item.get("chunk_id") or hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
                 else:
                     text = str(item).strip()
@@ -578,7 +580,6 @@ class VectorDBManager:
             try:
                 self._chroma_collection.add(ids=parsed_ids, documents=parsed_texts, metadatas=parsed_metas)
                 logger.info(f"Added {len(parsed_texts)} unique verified documents via native ChromaDB.")
-                return len(parsed_texts)
             except Exception as add_exc:
                 logger.warning(
                     f"Native ChromaDB add raised ({add_exc}). "
@@ -586,7 +587,7 @@ class VectorDBManager:
                 )
                 self.backend = "local_persistent_vector_store"
 
-        # Resilient local vector store
+        # Resilient local vector store (keep synchronized for deduplication, counting, and detailed inspection)
         if self._local_store is not None:
             return self._local_store.add_documents(chunks=parsed_texts, metadatas=parsed_metas, ids=parsed_ids)
 
