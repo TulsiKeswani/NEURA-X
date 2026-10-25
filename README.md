@@ -339,8 +339,7 @@ Phase 1 (Current)           Phase 2 (Near-Term)         Phase 3 (Enterprise)
 
 ## 👥 Contributors & Acknowledgements
 
-Developed for **Hackwave Hackathon — Problem Statement 5 (PS 5: Autonomous Financial Event Market Impact Graph)**.
-
+Developed for **Neura X**
 - **System Architecture & Graph Engine**: FinGraph Core Engineering Team
 - **Built With**: Python, FastAPI, React, TypeScript, ChromaDB, NetworkX, yfinance, Framer Motion.
 
